@@ -137,7 +137,8 @@ roslaunch fast_lio mapping_mid360.launch
 
 ### FAST-LIO2 TF 说明
 
-由于已修改 FAST-LIO2 源码：
+修改 FAST-LIO2 源码：
+及cfg里面的rviz文件
 
 - 父坐标系：`odom`
 - 子坐标系：`base_link`
