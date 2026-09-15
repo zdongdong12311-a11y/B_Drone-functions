@@ -118,6 +118,8 @@ roslaunch fast_lio mapping_mid360.launch
 ```
 
 确认 `/Odometry` 和 `/cloud_registered_body` 有数据。
+`/Odometry`的频率很imu保持一致
+
 
 ### FAST-LIO2 TF 说明
 
