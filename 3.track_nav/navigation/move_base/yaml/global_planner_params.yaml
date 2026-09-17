@@ -1,5 +1,0 @@
-GlobalPlanner:
-  allow_unknown: false      # 与 track_unknown_space 闭环
-  use_dijkstra: true
-  use_grid_path: false
-  use_quadratic: true
