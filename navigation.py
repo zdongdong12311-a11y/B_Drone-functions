@@ -1,24 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-navigation.py - 无人机自主导航控制器 v2.0 (适配 EGO-Planner)
-
-基于 Livox Mid-360 + FAST-LIO2 + EGO-Planner
-实现多航点自主导航：自动起飞 / 航点导航 / 安全降落
-
-v2.0 主要变更:
-- 移除电池监测
-- 设定点发布收归独立流线程, 全程无发布空窗 (防 PX4 OFFBOARD failsafe 误触发)
-- 紧急降落非阻塞化: 只置位 + 切 AUTO.LAND, 由飞控接管, 不再卡死回调线程
-- 修复 SIGINT 覆盖 rospy 处理导致 is_shutdown() 失效的问题
-- EGO 轨迹中断自动回退位置悬停; 目标下发带确认与重发机制
-- 到达判定 XY/Z 容差分离; 起飞失败自动安全处置
-- 新增 FAST-LIO / PX4 EKF 里程计一致性交叉检查 (可选)
-
-建议的 PX4 安全参数 (节点异常退出时的最后防线):
-- COM_OF_LOSS_T  : OFFBOARD 信号丢失超时 (默认 1s)
-- COM_OBL_RC_ACT : OFFBOARD 丢失动作, 建议 4 (Land) 或 3 (Return)
-"""
 import os
 import math
 import threading
@@ -27,7 +8,7 @@ import rospy
 from geometry_msgs.msg import PoseStamped
 from mavros_msgs.msg import PositionTarget, State
 from mavros_msgs.srv import CommandBool, SetMode
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, Path
 from tf import transformations
 
 try:
@@ -79,6 +60,11 @@ class NavigationController:
             rospy.logwarn("无效 ~goal_fail_action='%s', 回退为 'skip'", self.goal_fail_action)
             self.goal_fail_action = 'skip'
         self.ego_cmd_timeout = float(rospy.get_param('~ego_cmd_timeout', 0.5))
+        # v2.1: true=直接发 Path 到 EGO FSM 话题(推荐, 无需中转节点);
+        #       false=发 PoseStamped 到 /move_base_simple/goal(需 goal_relay 翻译)
+        self.goal_direct = bool(rospy.get_param('~goal_direct', True))
+        self.ego_waypoints_topic = rospy.get_param(
+            '~ego_waypoints_topic', '/waypoint_generator/waypoints')
 
         # ---- 里程计一致性检查 ----
         self.odom_check_topic = rospy.get_param('~odom_check_topic', '/Odometry')
@@ -106,6 +92,7 @@ class NavigationController:
 
         # ---- 发布者 ----
         self.goal_pub = rospy.Publisher(self.goal_topic, PoseStamped, queue_size=10)
+        self.ego_path_pub = rospy.Publisher(self.ego_waypoints_topic, Path, queue_size=1)
         self.setpoint_pub = rospy.Publisher('/mavros/setpoint_raw/local', PositionTarget, queue_size=10)
 
         # ---- 订阅者 ----
@@ -132,8 +119,10 @@ class NavigationController:
         self._stream_thread = threading.Thread(target=self._stream_loop, daemon=True)
         self._stream_thread.start()
 
-        rospy.loginfo("初始化完成: 起飞高度=%.2fm 流频率=%.0fHz 容差(XY/Z)=(%.2f/%.2f)m",
-                      self.takeoff_height, self.stream_rate, self.waypoint_xy_tol, self.waypoint_z_tol)
+        rospy.loginfo("初始化完成: 起飞高度=%.2fm 流频率=%.0fHz 容差(XY/Z)=(%.2f/%.2f)m "
+                      "目标模式=%s", self.takeoff_height, self.stream_rate,
+                      self.waypoint_xy_tol, self.waypoint_z_tol,
+                      "直接Path->EGO" if self.goal_direct else "PoseStamped->relay")
 
     # ===================== 回调函数 =====================
 
@@ -438,24 +427,39 @@ class NavigationController:
         return False
 
     def send_ego_goal(self, x, y, z):
-        """向 EGO-Planner 发布全局 3D 目标点"""
-        goal = PoseStamped()
-        goal.header.stamp = rospy.Time.now()
-        goal.header.frame_id = self.goal_frame_id
-        goal.pose.position.x = x
-        goal.pose.position.y = y
-        goal.pose.position.z = z
+        """向 EGO-Planner 下发目标。
+        goal_direct=True : 直接发布单航点 Path 到 EGO FSM 订阅的话题,
+                           不再依赖 waypoint_generator / goal_relay;
+        goal_direct=False: 兼容旧模式, 发 PoseStamped 到 /move_base_simple/goal
+                           (需要 goal_relay 在场翻译)。"""
+        if self.goal_direct:
+            path = Path()
+            path.header.stamp = rospy.Time.now()
+            path.header.frame_id = self.goal_frame_id
+            pose = PoseStamped()
+            pose.header = path.header
+            pose.pose.position.x = x
+            pose.pose.position.y = y
+            pose.pose.position.z = z
+            path.poses.append(pose)
+            self.ego_path_pub.publish(path)
+        else:
+            goal = PoseStamped()
+            goal.header.stamp = rospy.Time.now()
+            goal.header.frame_id = self.goal_frame_id
+            goal.pose.position.x = x
+            goal.pose.position.y = y
+            goal.pose.position.z = z
 
-        p = self.current_position.pose.position
-        dx, dy = x - p.x, y - p.y
-        yaw = math.atan2(dy, dx) if (abs(dx) > 1e-6 or abs(dy) > 1e-6) else self.now_yaw
-        qx, qy, qz, qw = transformations.quaternion_from_euler(0.0, 0.0, yaw)
-        goal.pose.orientation.x = qx
-        goal.pose.orientation.y = qy
-        goal.pose.orientation.z = qz
-        goal.pose.orientation.w = qw
-
-        self.goal_pub.publish(goal)
+            p = self.current_position.pose.position
+            dx, dy = x - p.x, y - p.y
+            yaw = math.atan2(dy, dx) if (abs(dx) > 1e-6 or abs(dy) > 1e-6) else self.now_yaw
+            qx, qy, qz, qw = transformations.quaternion_from_euler(0.0, 0.0, yaw)
+            goal.pose.orientation.x = qx
+            goal.pose.orientation.y = qy
+            goal.pose.orientation.z = qz
+            goal.pose.orientation.w = qw
+            self.goal_pub.publish(goal)
 
     def navigation_target(self, x, y, z, hover_time=2.0):
         """导航至目标点并悬停。返回 False 表示任务需要中止 (紧急/放弃)"""
