@@ -43,26 +43,30 @@
 
 
   <!-- main node -->
-  <!-- <node pkg="ego_planner" name="ego_planner_node" type="ego_planner_node" output="screen" launch-prefix="valgrind"> -->
   <node pkg="ego_planner" name="drone_$(arg drone_id)_ego_planner_node" type="ego_planner_node" output="screen">
-  
-    <remap from="~odom_world" to="$(arg odometry_topic)"/>
-    <remap from="~planning/bspline" to = "/drone_$(arg drone_id)_planning/bspline"/>
-    <remap from="~planning/data_display" to = "/drone_$(arg drone_id)_planning/data_display"/>
-    <remap from="~planning/broadcast_bspline_from_planner" to = "/broadcast_bspline"/>
-    <remap from="~planning/broadcast_bspline_to_planner" to = "/broadcast_bspline"/>
 
-    <remap from="~grid_map/odom" to="$(arg odometry_topic)"/>
-    <remap from="~grid_map/cloud" to="$(arg cloud_topic)"/>
-    <remap from="~grid_map/pose"   to = "$(arg camera_pose_topic)"/> 
-    <remap from="~grid_map/depth" to = "$(arg depth_topic)"/>
-    
+    <!-- 关键修改：这版代码用全局 NodeHandle 订阅，remap 的 from 不能带 ~ -->
+    <remap from="odom_world"    to="$(arg odometry_topic)"/>
+    <remap from="grid_map/odom" to="$(arg odometry_topic)"/>
+    <remap from="grid_map/cloud" to="$(arg cloud_topic)"/>
+    <remap from="grid_map/depth" to="$(arg depth_topic)"/>
+    <remap from="grid_map/pose"  to="$(arg camera_pose_topic)"/>
+
+    <!-- planning 话题：带 ~ 和不带 ~ 两种写法都映射到同一目标，双保险 -->
+    <remap from="planning/bspline"  to="/drone_$(arg drone_id)_planning/bspline"/>
+    <remap from="~planning/bspline" to="/drone_$(arg drone_id)_planning/bspline"/>
+    <remap from="planning/data_display"  to="/drone_$(arg drone_id)_planning/data_display"/>
+    <remap from="~planning/data_display" to="/drone_$(arg drone_id)_planning/data_display"/>
+    <remap from="planning/broadcast_bspline_from_planner" to="/broadcast_bspline"/>
+    <remap from="planning/broadcast_bspline_to_planner"   to="/broadcast_bspline"/>
+    <remap from="~planning/broadcast_bspline_from_planner" to="/broadcast_bspline"/>
+    <remap from="~planning/broadcast_bspline_to_planner"   to="/broadcast_bspline"/>
 
     <!-- planning fsm -->
     <param name="fsm/flight_type" value="$(arg flight_type)" type="int"/>
     <param name="fsm/thresh_replan_time" value="1.0" type="double"/>
     <param name="fsm/thresh_no_replan_meter" value="1.0" type="double"/>
-    <param name="fsm/planning_horizon" value="$(arg planning_horizon)" type="double"/> <!--always set to 1.5 times grater than sensing horizen-->
+    <param name="fsm/planning_horizon" value="$(arg planning_horizon)" type="double"/>
     <param name="fsm/planning_horizen_time" value="3" type="double"/>
     <param name="fsm/emergency_time" value="1.0" type="double"/>
     <param name="fsm/realworld_experiment" value="true"/>
@@ -85,14 +89,14 @@
     <param name="fsm/waypoint4_y" value="$(arg point4_y)" type="double"/>
     <param name="fsm/waypoint4_z" value="$(arg point4_z)" type="double"/>
 
-    <param name="grid_map/resolution"      value="0.08" /> 
-    <param name="grid_map/map_size_x"   value="$(arg map_size_x_)" /> 
-    <param name="grid_map/map_size_y"   value="$(arg map_size_y_)" /> 
-    <param name="grid_map/map_size_z"   value="$(arg map_size_z_)" /> 
-    <param name="grid_map/local_update_range_x"  value="5.5" /> 
-    <param name="grid_map/local_update_range_y"  value="5.5" /> 
-    <param name="grid_map/local_update_range_z"  value="4.5" /> 
-    <param name="grid_map/obstacles_inflation"     value="0.259" /> 
+    <param name="grid_map/resolution"      value="0.08" />
+    <param name="grid_map/map_size_x"   value="$(arg map_size_x_)" />
+    <param name="grid_map/map_size_y"   value="$(arg map_size_y_)" />
+    <param name="grid_map/map_size_z"   value="$(arg map_size_z_)" />
+    <param name="grid_map/local_update_range_x"  value="5.5" />
+    <param name="grid_map/local_update_range_y"  value="5.5" />
+    <param name="grid_map/local_update_range_z"  value="4.5" />
+    <param name="grid_map/obstacles_inflation"     value="0.259" />
     <param name="grid_map/local_map_margin" value="10"/>
     <param name="grid_map/ground_height"        value="-0.01"/>
     <!-- camera parameter -->
@@ -119,7 +123,7 @@
 
     <param name="grid_map/visualization_truncate_height"   value="1.8"/>
     <param name="grid_map/show_occ_time"  value="false"/>
-    <param name="grid_map/pose_type"     value="2"/>  
+    <param name="grid_map/pose_type"     value="2"/>
     <param name="grid_map/frame_id"      value="world"/>
 
   <!-- planner manager -->
@@ -150,9 +154,6 @@
     <param name="prediction/obj_num" value="$(arg obj_num_set)" type="int"/>
     <param name="prediction/lambda" value="1.0" type="double"/>
     <param name="prediction/predict_rate" value="1.0" type="double"/>
-  
-  
-
 
   </node>
 
