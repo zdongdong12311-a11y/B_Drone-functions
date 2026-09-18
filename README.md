@@ -15,3 +15,4 @@ param set EKF2_HGT_MODE 3
 aram set EKF2_AID_MASK 24
 param set COM_RCL_EXCEPT 4
 ```
+项目包在Release:sim1.0
