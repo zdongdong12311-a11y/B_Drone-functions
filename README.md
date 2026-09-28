@@ -22,6 +22,7 @@
 | PX4 | 1.13.3 |
 | Python | 3.8+ |
 | OpenCV | 4.x (视觉识别模块) |
+| YOLO | V5/V8 .etc|
 
 
 
