@@ -69,6 +69,12 @@ rostopic echo /move_base/status -n1                   # 状态流正常
 
 > **重要**: 不要额外静态发布 `map→odom`，Cartographer 负责这些动态 TF，重复发布会导致冲突。
 
+另一种树：
+```
+map ──┬─→ camera_init ──→ body ──→ base_link ──┬─→ base_link_frd
+      └─→ map_ned                              └─→ livox_frame
+```
+
 ## 目录结构
 
 ```
