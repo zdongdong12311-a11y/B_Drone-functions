@@ -115,10 +115,11 @@ drone/
     │   ├── R.png / G.png / B.png
     │   └── README.md
     └── rknn-yolov8-master/      ← RK3588 NPU 加速 YOLOv8
-        ├── src/                 ← C++ 源码 (三线程流水线)
-        ├── launch/
-        ├── weights/
-        └── README.md
+    |   ├── src/                 ← C++ 源码 (三线程流水线)
+    |   ├── launch/
+    |    ├── weights/
+    |    └── README.md
+    └── yolo_to_movebase  <- 2d像素坐标转三维世界坐标
 ```
 
 ## 前置安装
