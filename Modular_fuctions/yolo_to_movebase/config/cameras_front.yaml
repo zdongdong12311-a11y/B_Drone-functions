@@ -1,0 +1,36 @@
+# ============================================================
+# 朝前相机专用配置
+# 启动: roslaunch yolo_to_movebase yolo_to_movebase.launch camera:=front
+# ============================================================
+
+# ---------- 全局 ----------
+world_frame: "world"
+use_full_attitude: true
+publish_delay: 8.0
+tf_rate: 10.0
+
+# ---------- 类别 id -> 名称 (按你的模型修改) ----------
+class_names:
+  0: "person"
+  1: "car"
+
+# ---------- 只启用朝前相机 ----------
+cameras: ["front"]
+
+front:
+  topic: "/yolo_msgs_front"         # 上游朝前YOLO发布的话题
+  fx: 1000.0                        # TODO: 换成你的标定值!
+  fy: 1000.0                        # TODO
+  cx: 640.0                         # TODO
+  cy: 360.0                         # TODO
+  mount_rpy_deg: [0.0, 0.0, 0.0]    # 光轴朝机头, 画面正立
+  mount_xyz: [0.05, 0.0, -0.05]
+  depth_mode: "distance"            # 前视 -> 尺寸测距
+  real_sizes:                       # 类别 -> 真实高度(米), 拿尺子量
+    person: 1.7
+    car: 1.5
+  min_score: 0.5
+  min_range: 0.5
+  max_range: 30.0                   # distance模式远距误差大, 别设太大
+  x_offset: 0.1
+  z_offset: 1.3

@@ -1,0 +1,35 @@
+# ============================================================
+# 朝下相机专用配置
+# 启动: roslaunch yolo_to_movebase yolo_to_movebase.launch camera:=down
+# ============================================================
+
+# ---------- 全局 ----------
+world_frame: "world"
+use_full_attitude: true       # 完整姿态补偿, 保持 true
+publish_delay: 8.0            # 目标点最小发布间隔(秒)
+tf_rate: 10.0
+
+# ---------- 类别 id -> 名称 (按你的模型修改) ----------
+class_names:
+  0: "person"
+  1: "car"
+
+# ---------- 只启用朝下相机 ----------
+cameras: ["down"]
+
+down:
+  topic: "/yolo_msgs_down"          # 上游朝下YOLO发布的话题
+  fx: 1000.0                        # TODO: 换成你的标定值!
+  fy: 1000.0                        # TODO
+  cx: 640.0                         # TODO
+  cy: 360.0                         # TODO
+  mount_rpy_deg: [0.0, 90.0, 0.0]   # 光轴朝下, 画面上方=机头(转机测试确认)
+  mount_xyz: [0.0, 0.0, -0.05]      # 相机在机体系中的安装位置
+  depth_mode: "ground"              # 朝下看地面 -> 地面求交
+  ground_z: 0.0                     # 地面起飞=0
+  min_score: 0.5
+  min_range: 0.5
+  max_range: 15.0                   # 按实际飞行高度上限收紧
+  max_tilt_deg: 15.0                # 倾斜超过15°丢弃检测
+  x_offset: 0.0
+  z_offset: 0.5                     # 悬停在目标上方0.5m

@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>yolo_to_movebase</name>
+  <version>1.0.0</version>
+  <description>多相机 YOLO 检测 -&gt; 目标世界坐标 -&gt; move_base 目标点</description>
+  <maintainer email="you@example.com">you</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>std_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>vision_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+
+  <build_depend>eigen</build_depend>
+  <exec_depend>eigen</exec_depend>
+</package>
