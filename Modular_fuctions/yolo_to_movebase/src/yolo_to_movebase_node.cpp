@@ -5,6 +5,7 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/TransformStamped.h>
 #include <vision_msgs/Detection2DArray.h>
+#include <std_msgs/String.h>          // 运行时模式切换用
 
 #include <tf2_ros/transform_broadcaster.h>
 
@@ -64,11 +65,16 @@ class YoloToMoveBase {
 
   void setupRos() {
     goal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("/move_base_simple/goal", 10);
-    // odom 话题可由 launch/yaml 覆盖，默认值填原来写死的那个
+
+    // odom 话题可由 launch/yaml 覆盖, 默认值填原来写死的那个
     std::string odom_topic;
     pnh_.param<std::string>("odom_topic", odom_topic, std::string("/mavros/local_position/odom"));
     odom_sub_ = nh_.subscribe(odom_topic, 1, &YoloToMoveBase::odomCallback, this);
-    
+
+    // 运行时测距模式切换: 发布 "相机名:模式" (ground/distance/off), 如 "down:ground"
+    mode_sub_ = nh_.subscribe("/yolo_to_movebase/set_depth_mode", 1,
+                              &YoloToMoveBase::modeSwitchCallback, this);
+
     // 每个相机一个订阅者, 用 std::bind 绑定相机名
     for (const auto& kv : cameras_) {
       subs_.push_back(nh_.subscribe<vision_msgs::Detection2DArray>(
@@ -86,10 +92,11 @@ class YoloToMoveBase {
              publish_delay_.toSec());
     for (const auto& kv : cameras_) {
       const auto& c = kv.second;
+      const std::string tilt_str = c.max_tilt_deg > 0.0
+          ? std::to_string(c.max_tilt_deg) : std::string("none");
       ROS_INFO("  [%s] topic=%s  mode=%s  tilt_limit=%s  offset=(%.2f, %.2f)",
                kv.first.c_str(), c.topic.c_str(), c.depth_mode.c_str(),
-               c.max_tilt_deg > 0 ? std::to_string(c.max_tilt_deg).c_str() : "none",
-               c.x_offset, c.z_offset);
+               tilt_str.c_str(), c.x_offset, c.z_offset);
     }
   }
 
@@ -112,12 +119,40 @@ class YoloToMoveBase {
     has_odom_ = true;
   }
 
+  // ================= 运行时模式切换 =================
+  void modeSwitchCallback(const std_msgs::String::ConstPtr& msg) {
+    // 格式: "相机名:模式", 如 "down:ground" / "front:distance" / "down:off"
+    const auto pos = msg->data.find(':');
+    if (pos == std::string::npos) {
+      ROS_WARN("模式切换格式错误: '%s' (应为 相机名:ground|distance|off)",
+               msg->data.c_str());
+      return;
+    }
+    const std::string name = msg->data.substr(0, pos);
+    const std::string mode = msg->data.substr(pos + 1);
+    if (mode != "ground" && mode != "distance" && mode != "off") {
+      ROS_WARN("未知模式 '%s', 仅支持 ground / distance / off", mode.c_str());
+      return;
+    }
+    const auto it = cameras_.find(name);
+    if (it == cameras_.end()) {
+      std::string names;
+      for (const auto& kv : cameras_) names += kv.first + " ";
+      ROS_WARN("相机 '%s' 不存在, 可选: %s", name.c_str(), names.c_str());
+      return;
+    }
+    it->second.depth_mode = mode;
+    ROS_INFO("[%s] 测距模式已切换为 %s", name.c_str(), mode.c_str());
+  }
+
   // ================= 检测回调 =================
   void detectionCallback(const vision_msgs::Detection2DArray::ConstPtr& msg,
                          const std::string& cam_name) {
     const auto it = cameras_.find(cam_name);
     if (it == cameras_.end()) return;
     const CameraConfig& cam = it->second;
+
+    if (cam.depth_mode == "off") return;   // 运行时已关闭该相机
 
     if (!has_odom_) {
       ROS_WARN_THROTTLE(5.0, "[%s] 尚未收到里程计, 丢弃检测结果", cam_name.c_str());
@@ -272,13 +307,15 @@ class YoloToMoveBase {
     if (!valid_) return;
 
     if (has_odom_) {
+      // 机体: world -> drone_current
       geometry_msgs::TransformStamped t;
-      fillTf(t, drone_p_, drone_q_, "drone_current");
+      fillTf(t, world_frame_, drone_p_, drone_q_, "drone_current");
       tf_bc_.sendTransform(t);
 
+      // 相机: drone_current -> cam_x (挂在机体下, 跟着飞机飞)  ← 修复点
       for (const auto& kv : cameras_) {
         geometry_msgs::TransformStamped tc;
-        fillTf(tc, kv.second.mount_xyz,
+        fillTf(tc, "drone_current", kv.second.mount_xyz,
                Eigen::Quaterniond(kv.second.R_cb), "cam_" + kv.first);
         tf_bc_.sendTransform(tc);
       }
@@ -289,13 +326,14 @@ class YoloToMoveBase {
       const double xo = (it != cameras_.end()) ? it->second.x_offset : 0.0;
       const double zo = (it != cameras_.end()) ? it->second.z_offset : 0.0;
 
+      // 目标是世界系坐标, 挂在 world 下
       geometry_msgs::TransformStamped t1;
-      fillTf(t1, target_world_, Eigen::Quaterniond::Identity(),
+      fillTf(t1, world_frame_, target_world_, Eigen::Quaterniond::Identity(),
              "target_original_" + current_cam_);
       tf_bc_.sendTransform(t1);
 
       geometry_msgs::TransformStamped t2;
-      fillTf(t2, target_world_ + Eigen::Vector3d(xo, 0.0, zo),
+      fillTf(t2, world_frame_, target_world_ + Eigen::Vector3d(xo, 0.0, zo),
              Eigen::Quaterniond::Identity(), "target_final_" + current_cam_);
       tf_bc_.sendTransform(t2);
     }
@@ -305,15 +343,16 @@ class YoloToMoveBase {
       std::string child = "target_" + std::to_string(i++) + "_" + kv.first;
       std::replace(child.begin(), child.end(), '/', '_');  // TF帧名不能含'/'
       geometry_msgs::TransformStamped t;
-      fillTf(t, kv.second, Eigen::Quaterniond::Identity(), child);
+      fillTf(t, world_frame_, kv.second, Eigen::Quaterniond::Identity(), child);
       tf_bc_.sendTransform(t);
     }
   }
 
-  void fillTf(geometry_msgs::TransformStamped& t, const Eigen::Vector3d& p,
-              const Eigen::Quaterniond& q, const std::string& child) const {
+  void fillTf(geometry_msgs::TransformStamped& t, const std::string& parent,
+              const Eigen::Vector3d& p, const Eigen::Quaterniond& q,
+              const std::string& child) const {
     t.header.stamp = ros::Time::now();
-    t.header.frame_id = world_frame_;
+    t.header.frame_id = parent;   // 父帧由调用方指定, 不再写死 world
     t.child_frame_id = child;
     t.transform.translation.x = p.x();
     t.transform.translation.y = p.y();
@@ -324,7 +363,7 @@ class YoloToMoveBase {
     t.transform.rotation.w = q.w();
   }
 
-   // ================= 工具 =================
+  // ================= 工具 =================
   /// id 为 int64 的 vision_msgs 版本（apt 安装的 ros-noetic-vision-msgs 就是这种）
   std::string resolveClassName(std::int64_t raw_id) const {
     const auto it = class_names_.find(static_cast<int>(raw_id));
@@ -374,6 +413,7 @@ class YoloToMoveBase {
 
   ros::Publisher goal_pub_;
   ros::Subscriber odom_sub_;
+  ros::Subscriber mode_sub_;
   std::vector<ros::Subscriber> subs_;
   ros::Timer tf_timer_;
   ros::Timer publish_timer_;
