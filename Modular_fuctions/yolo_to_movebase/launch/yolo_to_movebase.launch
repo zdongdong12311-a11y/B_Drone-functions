@@ -1,17 +1,19 @@
 <launch>
-  <!-- ================= 选择相机 =================
-       camera:=down   只用朝下相机 (默认)
-       camera:=front  只用朝前相机
-       camera:=dual   双相机同时用 (需要 cameras_dual.yaml)
-  ================================================ -->
   <arg name="camera" default="down"/>
+  <arg name="config" default="$(find yolo_to_movebase)/config/cameras_$(arg camera).yaml"/>
 
-  <!-- 根据 camera 自动选配置文件: cameras_<camera>.yaml -->
-  <arg name="config"
-       default="$(find yolo_to_movebase)/config/cameras_$(arg camera).yaml"/>
+  <!-- 上游 YOLO 话题：留空 = 用 yaml 默认 -->
+  <arg name="down_topic"  default=""/>
+  <arg name="front_topic" default=""/>
 
-  <node pkg="yolo_to_movebase" type="yolo_to_movebase_node"
-        name="yolo_to_movebase" output="screen">
+  <!-- 里程计话题：留空 = 用源码里的默认值 -->
+  <arg name="odom_topic"  default=""/>
+
+  <node pkg="yolo_to_movebase" type="yolo_to_movebase_node" name="yolo_to_movebase" output="screen">
     <rosparam command="load" file="$(arg config)"/>
+
+    <param if="$(eval arg('down_topic') != '')"  name="down/topic"  value="$(arg down_topic)"/>
+    <param if="$(eval arg('front_topic') != '')" name="front/topic" value="$(arg front_topic)"/>
+    <param if="$(eval arg('odom_topic') != '')"  name="odom_topic"  value="$(arg odom_topic)"/>
   </node>
 </launch>
