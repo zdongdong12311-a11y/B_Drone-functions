@@ -64,8 +64,11 @@ class YoloToMoveBase {
 
   void setupRos() {
     goal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("/move_base_simple/goal", 10);
-    odom_sub_ = nh_.subscribe("/mavros/local_position/odom", 10,
-                              &YoloToMoveBase::odomCallback, this);
+    // odom 话题可由 launch/yaml 覆盖，默认值填你原来写死的那个
+    std::string odom_topic;
+    pnh_.param<std::string>("odom_topic", odom_topic, std::string("/mavros/local_position/odom"));
+    odom_sub_ = nh_.subscribe(odom_topic, 1, &YoloToMoveBase::odomCallback, this);
+    
     // 每个相机一个订阅者, 用 std::bind 绑定相机名
     for (const auto& kv : cameras_) {
       subs_.push_back(nh_.subscribe<vision_msgs::Detection2DArray>(
