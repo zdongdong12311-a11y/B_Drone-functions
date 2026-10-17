@@ -1,6 +1,6 @@
 # yolo_to_movebase — 无人机视觉导引节点
 
-> 把上游 YOLO 的检测框（像素）解算成**以起飞点为原点**的世界坐标，加偏移后发布给 move_base 做导航。
+> 把上游 YOLO 的检测框（像素）解算成**以起飞点为原点**的世界坐标，加偏移后输出给 move_base 导航，或发到自定义话题由主程序接管控制。
 >
 > 平台：PX4 飞控 + MAVROS + ROS1 Noetic（C++14）｜ 上游检测：YOLOv8
 
@@ -17,16 +17,18 @@
 7. [Launch 启动与话题调整](#7-launch-启动与话题调整)
 8. [运行时测距模式切换](#8-运行时测距模式切换)
 9. [上游 YOLO 对接规范](#9-上游-yolo-对接规范)
-10. [TF 树与 RViz 可视化](#10-tf-树与-rviz-可视化)
-11. [地面手持验证（起飞前必做）](#11-地面手持验证起飞前必做)
-12. [故障排查](#12-故障排查)
-13. [起飞前检查清单](#13-起飞前检查清单)
+10. [主程序接管：自定义话题与 OFFBOARD 控制](#10-主程序接管自定义话题与-offboard-控制)
+11. [抛投任务实战](#11-抛投任务实战)
+12. [TF 树与 RViz 可视化](#12-tf-树与-rviz-可视化)
+13. [地面手持验证（起飞前必做）](#13-地面手持验证起飞前必做)
+14. [故障排查](#14-故障排查)
+15. [起飞前检查清单](#15-起飞前检查清单)
 
 ---
 
 ## 1. 项目简介
 
-`yolo_to_movebase` 是视觉导引链路的中间节点：上游 YOLO 节点发布 `vision_msgs/Detection2DArray` 格式的检测结果（像素级），本节点结合 MAVROS 里程计位姿，把像素坐标经过「像素系 → 相机系 → 机体系 → 世界系」四步变换解算为世界坐标，再加上偏移量发布 `/move_base_simple/goal`，交给 move_base 完成路径规划与飞行。
+`yolo_to_movebase` 是视觉导引链路的中间节点：上游 YOLO 节点发布 `vision_msgs/Detection2DArray` 格式的检测结果（像素级），本节点结合 MAVROS 里程计位姿，把像素坐标经过「像素系 → 相机系 → 机体系 → 世界系」四步变换解算为世界坐标，再加上偏移量输出导航目标点。
 
 核心特性：
 
@@ -35,8 +37,10 @@
   - `ground`：像素射线与地平面求交，深度来自里程计高度，**下视相机推荐**；
   - `distance`：相似三角形，按目标真实尺寸反算距离，**前视相机推荐**。
 - **配置驱动**：切换相机组合只需改 launch 一个参数（`camera:=down/front/dual`），源码零修改。
+- **四种话题全部可在 launch 覆盖**：上游 YOLO 话题（`down_topic`/`front_topic`）、里程计话题（`odom_topic`）、目标点输出话题（`goal_topic`），不传就用默认值。
+- **两种输出模式**：默认发 `/move_base_simple/goal` 交给 move_base 导航；也可把 `goal_topic` 改成任意自定义话题，由自己的主程序订阅接管（见第 10 章）。
 - **倾斜保护**：机体姿态角超过阈值时自动丢弃检测，防止像素误差被放大成地面位置误差。
-- **运行时可调**：测距模式支持运行时话题切换（含 `off` 关闭）；上游 YOLO 话题、里程计话题均支持 launch 命令行覆盖，不用改 yaml、不用重编译。
+- **运行时可调**：测距模式支持运行时话题切换（含 `off` 关闭），不用重启节点。
 
 ---
 
@@ -58,9 +62,11 @@
   └───────────────────────────────────────────────┘
           │                        │
           ▼                        ▼
-  /move_base_simple/goal      TF 广播
-  (geometry_msgs/PoseStamped) world→drone_current→cam_x
-                              world→target_*
+  goal_topic (默认             TF 广播
+  /move_base_simple/goal)   world→drone_current→cam_x
+          │                 world→target_*
+          ▼
+  move_base (模式A)  或  主程序→mavros setpoint (模式B)
 ```
 
 ### 2.1 话题接口总览
@@ -70,8 +76,10 @@
 | 订阅 | 上游 YOLO（每相机一个，yaml 配置） | `vision_msgs/Detection2DArray` | 检测结果 |
 | 订阅 | `/mavros/local_position/odom`（默认，可覆盖） | `nav_msgs/Odometry` | 位姿来源 |
 | 订阅 | `/yolo_to_movebase/set_depth_mode` | `std_msgs/String` | 运行时切换测距模式 |
-| 发布 | `/move_base_simple/goal` | `geometry_msgs/PoseStamped` | 导航目标点 |
+| 发布 | `goal_topic`（默认 `/move_base_simple/goal`，可覆盖） | `geometry_msgs/PoseStamped` | 目标点输出 |
 | 发布 | TF | `tf2_msgs/TFMessage` | 机体/相机/目标可视化帧 |
+
+> 注意方向：里程计是**本节点订阅 MAVROS** 拿位姿来解算用的，不是输出；输出只有 goal_topic 和 TF 两条线。
 
 ### 2.2 文件结构
 
@@ -92,6 +100,7 @@ yolo_to_movebase/
 │   ├── yolo_to_movebase.launch    # 主入口（camera/话题参数可选）
 │   ├── down.launch                # 便捷入口 = camera:=down
 │   └── front.launch               # 便捷入口 = camera:=front
+└── README.md
 ```
 
 ---
@@ -109,7 +118,7 @@ yolo_to_movebase/
 ### 3.1 原点语义（重要）
 
 - **所有解算出的目标坐标，原点永远是起飞点**（即里程计 odom 帧的原点），与检测那一刻飞机在哪儿**无关**。
-- 这意味着：飞机飞到哪，目标坐标都是「相对起飞点往东/北/上多少米」，直接可用，不需要再叠加飞机位置。
+- 飞机飞到哪，目标坐标都是「相对起飞点往东/北/上多少米」，直接可用。
 - **原点绑定的是 odom 帧，不是本节点的生命周期**：重启本节点不会重置原点（它继续用当前 odom）。
 - **飞控/EKF 重置会让原点重新设定**：此时之前发出的所有目标坐标全部作废，必须重新检测。起飞后请勿重置 EKF2 或切换里程计源。
 
@@ -132,7 +141,7 @@ yolo_to_movebase/
 世界系(起飞原点):  P_world = T_wb + R_wb · ( mount_xyz + R_cb · p_cam )
 ```
 
-- ①②③中，`R_cb` 在 `camera_config.hpp` 里由 `mount_rpy_deg` 自动合成（含「光学系→FLU」固定旋转），你只需要填物理安装角。
+- `R_cb` 在 `camera_config.hpp` 里由 `mount_rpy_deg` 自动合成（含「光学系→FLU」固定旋转），你只需要填物理安装角。
 - 姿态变换用**完整四元数**（`use_full_attitude: true`），倾斜时自动补偿。实测对比：5m 高、倾斜 10° 时，只用 yaw 的旧算法会差约 **0.87m**，完整姿态补偿后消除。
 - 水平悬停时完整姿态与仅 yaw 数学等价，参数 `use_full_attitude` 保留是为了与旧版结果对照。
 
@@ -147,6 +156,8 @@ yolo_to_movebase/
 
 深度不依赖目标尺寸，只依赖里程计高度，因此**下视场景精度最高、最稳**。
 
+**回传 z 值**：交点严格落在地平面上，因此 ground 模式解算出的目标坐标 **z 恒等于 `ground_z`**（默认 0.0，即起飞点地面高度）。这个点是目标在地面上的位置（相当于目标的「脚底」），**不是**目标顶部或中心的高度——人站着 1.7m 高，下视回传的也是 z=0 的地面点。
+
 ### 4.3 distance 模式（前视推荐）
 
 相似三角形，按目标真实高度反算深度：
@@ -158,6 +169,18 @@ Z = fx × H_real / h_px        H_real: 目标真实高度(m), h_px: 检测框高
 深度只与内参、目标实际尺寸、框高有关，**不需要知道地面在哪**，适合前视看远处目标。依赖 yaml 中 `real_sizes` 的标定精度。
 
 > 深度 Z 确定后，两种模式都走同一套「光学系 → 机体系 → 世界系」反投影，只是 Z 的来源不同。
+
+### 4.4 回传坐标的 z 值是多少
+
+| 模式 | 回传 z 值 | 说明 |
+|------|-----------|------|
+| `ground`（下视） | **恒等于 `ground_z`**（默认 0.0） | 点在地面平面上，代表目标脚底的地面位置，与目标本身高度无关 |
+| `distance`（前视） | 几何解算值，**不固定** | ≈ 目标检测框中心的世界高度，随飞机高度与框中心像素逐帧变化 |
+| 最终发布 goal | 目标 z + `z_offset` | 下视默认配置下 goal z = 0.0 + 0.5 = **0.5m**（离地 0.5m 悬停高度） |
+
+由此可得两条使用结论：下视场景无法也没有必要从图像测目标高度，z 完全由 `ground_z` 决定，若目标区地面与起飞点有高差，直接改 `ground_z`（相对起飞点，上正下负）；前视 distance 模式的 z 不受 `ground_z` 控制，想让 goal 悬停到期望高度就用 `z_offset` 微调。
+
+> 日志对应关系：`目标世界坐标: (x, y, z)` 打的是**加偏移前**的解算值（下视 z 恒为 ground_z），`已发布目标 ... -> (x, y, z)` 打的才是**含偏移**的最终值，别拿前者核对 z_offset。
 
 ---
 
@@ -201,12 +224,13 @@ source devel/setup.bash
 
 | 参数 | 类型 | 默认 | 作用 | 设置不当的后果 |
 |------|------|------|------|----------------|
-| `world_frame` | string | `world` | 目标点与 TF 的父坐标系 | 与 move_base 全局系不一致 → 目标点错位 |
+| `world_frame` | string | `world` | 目标点与 TF 的父坐标系 | 与下游坐标系不一致 → 目标点错位 |
 | `use_full_attitude` | bool | `true` | 倾斜时用完整姿态补偿（false 仅用 yaw） | 大倾斜时 false 误差可达米级 |
 | `publish_delay` | double | `8.0` | 两次发布的最小间隔（秒） | 太小 → 目标点频繁跳变；太大 → 响应迟钝 |
 | `tf_rate` | double | `10.0` | TF 广播频率（Hz） | 过低 → RViz 里帧抖动 |
 | `class_names` | map | — | 类别 id → 名称，如 `{0: person}` | 缺项时日志显示 `class_0`，distance 模式查不到 real_sizes |
 | `odom_topic` | string | `/mavros/local_position/odom` | 里程计话题（launch `odom_topic:=` 可覆盖） | 名字错 → 收不到位姿，节点一直提示丢弃检测 |
+| `goal_topic` | string | `/move_base_simple/goal` | 目标点输出话题（launch `goal_topic:=` 可覆盖） | 改名后下游没跟着订阅 → 目标发到了空频道 |
 
 ### 6.2 相机参数（每个相机一段，段名 = cameras 列表中的名字）
 
@@ -218,10 +242,10 @@ source devel/setup.bash
 | `mount_xyz` | list | `[0,0,-0.05]` | 相机光心在机体系的安装位置（FLU，米） | 近距离目标偏差明显 |
 | `mount_rpy_deg` | list | 朝下 `[0,90,0]`；朝前 `[0,0,0]` | 安装朝向（度，FLU 顺序） | **方向错误 → 目标镜像/旋转**，最常见的坑 |
 | `depth_mode` | string | `ground` / `distance` / `off` | 测距模式 | `ground` 用在前视会因射线平行地面而失败 |
-| `ground_z` | double | `0.0` | 地平面高度（世界系，米），ground 模式必填 | 不为 0 时没填 → 交点整体缩放错 |
+| `ground_z` | double | `0.0` | 地平面高度（世界系，米），ground 模式必填；**回传目标点 z = 该值** | 没按实际地面填 → 回传 z 错 + 交点整体缩放错 |
 | `real_sizes` | map | `{person: 1.7, car: 1.5}` | 类别真实高度（米），distance 模式必填 | 尺寸错 → 距离按比例错 |
 | `min_score` | double | `0.5` | 置信度门槛 | 太低 → 误检触发导航 |
-| `min_range` / `max_range` | double | `0.5` / `15.0` | 有效距离区间（米），区间外丢弃 | 太宽 → 远处误检也算数 |
+| `min_range` / `max_range` | double | `0.5` / `15.0` | 有效距离区间（米），区间外丢弃 | 太宽 → 远处误检也算数；**小于巡航高度 → 永远检不到** |
 | `max_tilt_deg` | double | `15.0` | 倾斜保护阈值（度），`0` = 禁用 | 禁用后大倾斜时位置误差被放大 |
 | `x_offset` / `z_offset` | double | `0.0` / `0.5` | 发布前目标点偏移（**世界系 ENU 方向，不随机头旋转**） | 太大 → 落点偏离目标 |
 
@@ -232,6 +256,7 @@ world_frame: world
 use_full_attitude: true
 publish_delay: 8.0
 tf_rate: 10.0
+# goal_topic: /yolo_target_world    # 也可写死在 yaml, launch 传参优先
 
 class_names:
   0: person
@@ -277,7 +302,8 @@ roslaunch yolo_to_movebase yolo_to_movebase.launch camera:=dual
 | `camera` | `down` | 选择加载 `config/cameras_$(arg camera).yaml` |
 | `down_topic` | 空 | **临时覆盖** down 相机的上游 YOLO 话题 |
 | `front_topic` | 空 | **临时覆盖** front 相机的上游 YOLO 话题 |
-| `odom_topic` | 空 | **临时覆盖** 里程计话题（源码默认 `/mavros/local_position/odom`） |
+| `odom_topic` | 空 | **临时覆盖** 里程计话题（默认 `/mavros/local_position/odom`） |
+| `goal_topic` | 空 | **临时覆盖** 目标点输出话题（默认 `/move_base_simple/goal`） |
 
 **覆盖规则：留空 = 用 yaml / 源码里的默认值；命令行传了就覆盖。** yaml 是持久配置，命令行是当次启动的临时覆盖，互不冲突。
 
@@ -290,9 +316,13 @@ roslaunch yolo_to_movebase yolo_to_movebase.launch camera:=down down_topic:=/dar
 # 换里程计来源（例如自己的 EKF 输出）
 roslaunch yolo_to_movebase yolo_to_movebase.launch camera:=down odom_topic:=/odometry/global
 
+# 换目标点输出话题（主程序接管模式, 见第 10 章）
+roslaunch yolo_to_movebase yolo_to_movebase.launch camera:=down goal_topic:=/yolo_target_world
+
 # dual 模式全部覆盖
 roslaunch yolo_to_movebase yolo_to_movebase.launch camera:=dual \
-    down_topic:=/yolo/down_result front_topic:=/yolo/front_result odom_topic:=/odometry/global
+    down_topic:=/yolo/down_result front_topic:=/yolo/front_result \
+    odom_topic:=/odometry/global goal_topic:=/yolo_target_world
 ```
 
 换之前先确认上游真的在发、且类型正确：
@@ -337,7 +367,8 @@ rostopic pub -1 /yolo_to_movebase/set_depth_mode std_msgs/String "data: 'down:of
 
 - 支持 `ground` / `distance` / `off` 三种，格式错误或相机名不存在会打 WARN 并忽略；
 - 切换**只改内存**，节点重启后回到 yaml 里配置的模式，**yaml 仍是唯一持久配置**；
-- 节点是单线程 spin，切换与检测回调天然串行，任意时刻切换都安全。
+- 节点是单线程 spin，切换与检测回调天然串行，任意时刻切换都安全；
+- 只能运行时改模式，**offset、内参等其余参数运行时不可改**，改 yaml 后需重启节点。
 
 ---
 
@@ -384,7 +415,157 @@ def publish_dets(dets):                       # dets: [(cls_id, conf, u, v, h_px
 
 ---
 
-## 10. TF 树与 RViz 可视化
+## 10. 主程序接管：自定义话题与 OFFBOARD 控制
+
+本节点默认把目标点发给 move_base。如果你的任务需要自己的控制逻辑（比如抛投、精准降落），可以把输出改到**任意自定义话题**，由主程序订阅后直接控制 mavros。
+
+### 10.1 两种输出模式
+
+```
+【模式 A · move_base 导航】(默认, 不传 goal_topic)
+YOLO → 本节点 → /move_base_simple/goal → move_base → ... → mavros → PX4
+
+【模式 B · 主程序接管】(launch 传 goal_topic:=/xxx)
+YOLO → 本节点 → /yolo_target_world → 主程序 → /mavros/setpoint_position/local → PX4 (OFFBOARD)
+```
+
+**同一个节点源码，两种模式靠启动参数切换**，随时可以换回去。
+
+```bash
+# 模式 B 启动
+roslaunch yolo_to_movebase yolo_to_movebase.launch camera:=down goal_topic:=/yolo_target_world
+```
+
+`goal_topic` 也可以写死在 yaml 全局段（`goal_topic: /yolo_target_world`），launch 传参优先级更高。
+
+### 10.2 话题名可以随便起，但记住三条
+
+ROS 话题不需要预先创建——**advertise 的瞬间话题就存在了**，名字就是一切。所以：
+
+1. **两端名字必须一字不差**：发布方 `/yolo_target_world`、订阅方 `/YoloTargetWorld`（大小写不同）= 永远收不到，**不报任何错**。接好后必须用 `rostopic info` 核对：
+   ```bash
+   rostopic info /yolo_target_world
+   # Type: geometry_msgs/PoseStamped
+   # Publishers: /yolo_to_movebase     ← 两边都在才算通
+   # Subscribers: /mission_main
+   ```
+2. **带 `/` 开头用绝对名**：不带 `/` 会被解析到节点命名空间下，跨节点对接容易错位。
+3. **别撞已有话题名**：同名不同类型会被 ROS 拒绝并报类型冲突；起名前 `rostopic list` 扫一眼。
+
+### 10.3 主程序最小模板（Python）
+
+```python
+import rospy
+from geometry_msgs.msg import PoseStamped
+
+current_target = None
+
+def target_cb(msg):                # 收到本节点的目标(8s 一条)
+    global current_target
+    current_target = msg.pose      # 只记录, 由定时器持续重发
+
+rospy.init_node('mission_main')
+rospy.Subscriber('/yolo_target_world', PoseStamped, target_cb, queue_size=1)
+sp_pub = rospy.Publisher('/mavros/setpoint_position/local', PoseStamped, queue_size=10)
+
+def sp_loop(event):                # 20Hz 持续发当前目标
+    if current_target is None:
+        return
+    sp = PoseStamped()
+    sp.header.stamp = rospy.Time.now()
+    sp.header.frame_id = 'map'
+    sp.pose = current_target       # z 已含 z_offset(如抛投高度)
+    sp_pub.publish(sp)
+
+rospy.Timer(rospy.Duration(0.05), sp_loop)   # 20Hz
+rospy.spin()
+```
+
+三个关键点：
+
+- **offboard 三要素**：先以 **>2Hz 持续发 setpoint**（上面用 20Hz 定时器），再 `/mavros/set_mode`（custom_mode=`OFFBOARD`）切模式，最后 `/mavros/cmd/arming` 解锁，顺序不能反；
+- **8 秒节流的 goal 不能直接当 setpoint 转发**——那是给 move_base 规划用的稀疏点，直接转发会一冲一停。正确做法是"收到→记住→20Hz 重发"；
+- **坐标系**：本节点解算结果与 `/mavros/local_position/odom` 同帧（ENU、起飞原点），`/mavros/setpoint_position/local` 也是这个帧，直接用即可，不需要再变换。
+
+### 10.4 可选：锁存（latch）
+
+主程序如果晚于目标检测启动，会错过上一条 goal。给 publisher 加锁存后，晚启动的订阅者一连接就能立刻拿到最后一条：
+
+```cpp
+// src/yolo_to_movebase_node.cpp 的 setupRos() 中, 第三个参数 true = latch
+goal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(goal_topic, 10, true);
+```
+
+不加也行——检测持续发生，8 秒后就有新消息，只是首次响应慢一点。
+
+---
+
+## 11. 抛投任务实战
+
+场景：飞机定高巡航 → 下视识别地面目标 → 飞到目标上空指定高度 → 悬停 → 抛投。目标与地面同一水平面（`ground_z: 0.0`）。
+
+### 11.1 原理：z_offset 就是抛投高度
+
+下视 ground 模式解算的目标 z 恒为 0（地面点），加上 `z_offset` 后，发布的 goal 正好是「目标正上方、离地 H 米」的悬停点：
+
+```text
+goal = (目标x + x_offset, 目标y, 0 + z_offset)
+     = (目标x, 目标y, 抛投高度)        当 x_offset=0, z_offset=抛投高度
+```
+
+### 11.2 配置改法（down 相机段）
+
+```yaml
+down:
+  depth_mode: ground
+  ground_z: 0.0          # 目标与起飞点同地面, 保持 0
+  max_range: 15.0        # ⚠ 必须 ≥ 巡航高度! 下视斜距≈高度, 超出就永远检不到
+  max_tilt_deg: 15.0     # ⚠ 巡航俯仰若超此值, 检测会被倾斜保护丢弃
+  x_offset: 0.0          # 悬停抛投: 清零, 目标正上方
+  z_offset: 5.0          # ← 抛投高度(目标上空 5m 悬停), 按任务定
+```
+
+### 11.3 任务流程
+
+```
+① 定高巡航（高度 < max_range）
+② 下视识别目标 → 节点发 goal=(目标正上方, 抛投高度)（8s 节流）
+③ 模式B: 主程序带飞机过去 / 模式A: move_base 带过去
+④ 到位确认: 水平误差 < 0.3m 且稳定 2~3 秒
+⑤ 触发抛投（舵机/继电器; 手动遥控通道或主程序自动触发）
+⑥ 抛完 → 继续巡逻 or 返航
+```
+
+### 11.4 落点物理：抛点 ≠ 落点（关键）
+
+释放瞬间载荷带着飞机的速度和风走，漂移量：
+
+```
+下落时间  t = √(2h/g)          h=5m → t≈1.0s,  h=8m → t≈1.28s
+漂移距离  d = v_release × t
+```
+
+| 情况 | 漂移 | 对策 |
+|------|------|------|
+| **悬停抛投**（推荐） | 只有风漂：3m/s 风 × 1.0s ≈ **3m** | 逆风方向预偏释放点，或降低抛投高度 |
+| 带速度抛投 | 速度 + 风一起算：5m/s 前速 × 1s = **5m 前抛** | 需要机体系偏移补偿；`x_offset` 是世界系固定方向不随机头转，航向一变就失效 |
+
+结论：精度要求高就**先停稳再抛**。
+
+### 11.5 巡航阶段的三个坑
+
+1. **巡航高度 > max_range**：下视斜距≈高度，yaml 里 15m 而巡航 20m 时，所有检测都被「超出距离」过滤，永远发现不了目标。巡航高度必须低于 max_range，或调大 max_range。
+2. **巡航俯仰 vs 倾斜保护**：5m/s 前飞俯仰约 10~15°，顶着 `max_tilt_deg: 15` 上限。若日志频繁出现「机体倾斜 xx° > xx°，丢弃检测」，放宽到 20~25°，或减速/悬停后再识别。
+3. **风偏预估**：目标解算再准，5m 高度 + 3m/s 风就是约 3m 落点漂移。收误差的手段：压低抛投高度，或释放点朝风的反方向预偏。
+
+### 11.6 自动化方向
+
+- **到位自动抛投**：写个小监督节点，对比 `/mavros/local_position/odom` 与 goal 的水平距离，小于阈值持续 N 秒就发抛投指令（舵机话题）；
+- **y_offset 补风偏**：当前 `publishGoal` 只有 x/z 偏移（东向+上），没有北向。补一个 `y_offset` 只需三处小改（`camera_config.hpp` 加字段、`camera_config.cpp` 读参、`publishGoal` 加一项）。
+
+---
+
+## 12. TF 树与 RViz 可视化
 
 节点以 `tf_rate`（默认 10Hz）广播以下 TF：
 
@@ -395,18 +576,18 @@ world
     └── cam_front                前视相机
 
 world
-├── target_original_<cam>        最近一次解算的原始目标点
+├── target_original_<cam>        最近一次解算的原始目标点（未加偏移）
 ├── target_final_<cam>           加偏移后的最终目标点（= 实际发布值）
 └── target_0_down_person ...     历史检测目标缓存（按 相机/类别 记忆）
 ```
 
 - 相机帧挂在 `drone_current` **之下**，RViz 中会跟着飞机移动；如果看到相机帧钉在起飞点不动，说明跑的是 TF 修复前的旧版本代码，更新 `broadcastTf()`。
 - 验证 TF 树：`rosrun rqt_tf_tree rqt_tf_tree`，确认无断链。
-- 观察目标点输出：`rostopic echo /move_base_simple/goal`，或 RViz 添加 Pose 显示该话题。
+- 观察目标点输出：`rostopic echo <goal_topic>`，或 RViz 添加 Pose 显示该话题。
 
 ---
 
-## 11. 地面手持验证（起飞前必做）
+## 13. 地面手持验证（起飞前必做）
 
 不用起飞就能抓出 90% 的配置错误，流程 10 分钟：
 
@@ -429,7 +610,7 @@ world
 
 ---
 
-## 12. 故障排查
+## 14. 故障排查
 
 | 现象 | 可能原因 | 处理 |
 |------|----------|------|
@@ -437,23 +618,28 @@ world
 | 永远没有「检测到 xxx」日志 | 上游话题名/类型不对 | `rostopic info` 确认是 `Detection2DArray`；或用 `down_topic:=` 覆盖 |
 | 一直「尚未收到里程计，丢弃检测结果」 | odom 话题名/类型不对 | `rostopic info` 确认 `nav_msgs/Odometry`；用 `odom_topic:=` 覆盖 |
 | 「距离 xxm 超出 [a, b]」频繁出现 | `min/max_range` 太窄或内参太离谱 | 放宽区间排查，修好内参后再收紧 |
-| 「机体倾斜 xx° > xx°，丢弃检测」 | `max_tilt_deg` 太小或悬停不稳 | 适当放宽，或改善姿态控制 |
-| 检测到了但不发 goal | 8s 节流窗口内 | 属正常节流，看「x.x s 后发布目标点」日志 |
+| 「机体倾斜 xx° > xx°，丢弃检测」 | `max_tilt_deg` 太小或巡航俯仰大 | 放宽阈值，或减速/悬停后识别 |
+| 只见「目标世界坐标」不见发布 | 「已发布目标」**无 `[down]` 前缀**易漏看；或 8s 节流中 | `rostopic echo <goal_topic>` 直接验证；`grep` 别只搜 down |
+| goal 的 z 与预期不符 | 日志打的是加偏移前的值；或 z_offset 没读到 | 启动 summary 看 `offset=(x, z)`；确认 key 是 `z_offset` 且在相机段内 |
+| 「已发布目标」z 一直是 0 | `z_offset` 拼写错（如写成 `offset_z`）或放到了全局段 | 改为 `z_offset` 并放进相机段，重启节点 |
+| 自定义话题上主程序收不到 | 两端名字/类型不一致，或订阅方启动晚 | `rostopic info` 核对两端；或给 publisher 加 latch（§10.4） |
 | 发布的 goal 类别显示 `class_3` | `class_names` 缺该 id | 在 yaml 补 `3: 类别名` |
 | RViz 里相机帧不跟飞机 | 旧版代码 TF 父帧写死 world | 更新为最新 `broadcastTf()`（相机挂 `drone_current` 下） |
 | 目标坐标「漂」，飞着飞着不准 | 起飞后重置过 EKF / 里程计源切换 | 重置后原点变了，旧目标作废，重新检测 |
+| 抛投落点系统性偏移 | 风漂 / 带速度释放 | 见 §11.4，预偏释放点或悬停后抛 |
 
 ---
 
-## 13. 起飞前检查清单
+## 15. 起飞前检查清单
 
 - [ ] 两台相机**内参已实际标定**并写入 yaml（不再是 1000/640/360 占位值）
 - [ ] 下视相机 `mount_rpy_deg: [0, 90, 0]`、前视 `[0, 0, 0]` 已实机核对
 - [ ] `mount_xyz` 按实际安装位置量取填写
 - [ ] `real_sizes` 用实物量过（人 1.7m 只是参考）
-- [ ] `max_range` 收紧到实际作业距离（下视建议 10~15，前视建议 20~30）
-- [ ] 第 11 章手持地面验证通过（误差 < 0.3m）
+- [ ] `max_range` 收紧到实际作业距离，且 **≥ 巡航高度**
+- [ ] `z_offset` 已按任务设定（导航跟随 0.5 / 抛投=抛投高度）
+- [ ] 第 13 章手持地面验证通过（误差 < 0.3m）
 - [ ] `rostopic info` 确认上游话题是 `Detection2DArray`、odom 是 `Odometry`
+- [ ] 模式B 时：`goal_topic` 与主程序两端 `rostopic info` 接通，主程序 20Hz setpoint 流验证过
+- [ ] 抛投任务：抛投高度与风漂预估过（§11.4），触发链路（舵机/继电器）地面测试过
 - [ ] 知悉原点语义：起飞后**不重置 EKF**，否则历史目标全部作废
-- [ ] `publish_delay`、`x_offset/z_offset` 按任务需求确认
-````
