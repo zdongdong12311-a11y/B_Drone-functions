@@ -9,8 +9,8 @@ publish_delay: 8.0
 tf_rate: 10.0
 
 class_names:
-  0: "person"
-  1: "car"
+  "0": "person"
+  "1": "car"
 
 cameras: ["front", "down"]
 
