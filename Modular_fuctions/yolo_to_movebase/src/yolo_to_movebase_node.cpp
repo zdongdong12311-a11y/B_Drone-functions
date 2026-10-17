@@ -64,7 +64,9 @@ class YoloToMoveBase {
   }
 
   void setupRos() {
-    goal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("/move_base_simple/goal", 10);
+    std::string goal_topic;
+    pnh_.param<std::string>("goal_topic", goal_topic, std::string("/move_base_simple/goal"));
+    goal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(goal_topic, 10);
 
     // odom 话题可由 launch/yaml 覆盖, 默认值填原来写死的那个
     std::string odom_topic;
