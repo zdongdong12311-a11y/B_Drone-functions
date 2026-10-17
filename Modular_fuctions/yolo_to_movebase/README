@@ -1,265 +1,461 @@
-yolo_to_movebase
-多相机 YOLO 视觉导引节点 —— 将 YOLOv8 的像素级检测结果解算为世界坐标系下的三维目标位置，并发布为 move_base 导航目标点。
+# yolo_to_movebase — 无人机视觉导引节点
 
-适用平台：PX4 + MAVROS + ROS1 (Noetic) | 语言：C++14
+> 把上游 YOLO 的检测框（像素）解算成**以起飞点为原点**的世界坐标，加偏移后发布给 move_base 做导航。
+>
+> 平台：PX4 飞控 + MAVROS + ROS1 Noetic（C++14）｜ 上游检测：YOLOv8
 
-目录
-1. 功能概述
-2. 坐标系与原点约定
-3. 核心原理
-4. 项目结构
-5. 编译
-6. 运行与相机选择
-7. 配置说明
-8. 接口一览
-9. 验证方法
-10. 故障排查
-11. 相关文档
+---
 
-1. 功能概述
-/yolo_msgs_front (Detection2DArray) ──┐
-/yolo_msgs_down  (Detection2DArray) ──┼──► yolo_to_movebase ──► /move_base_simple/goal
-/mavros/local_position/odom          ──┘
-无人机通过前视 / 下视相机检测目标，本节点完成三件事：
-- 解算：像素坐标 → 相机系 → 机体系 → 世界系的三维位置
-- 补偿：用里程计完整姿态（含 roll / pitch / yaw）消除机体倾斜带来的误差
-- 发布：按最小间隔节流，向 move_base 发布导航目标点
+## 目录
 
-支持单相机（朝前或朝下）与双相机两种工作方式，通过 launch 参数选择，支持飞行中运行时切换测距模式。
+1. [项目简介](#1-项目简介)
+2. [系统架构与数据流](#2-系统架构与数据流)
+3. [坐标系约定（必读）](#3-坐标系约定必读)
+4. [坐标变换原理](#4-坐标变换原理)
+5. [编译方法与常见编译错误](#5-编译方法与常见编译错误)
+6. [配置文件详解](#6-配置文件详解)
+7. [Launch 启动与话题调整](#7-launch-启动与话题调整)
+8. [运行时测距模式切换](#8-运行时测距模式切换)
+9. [上游 YOLO 对接规范](#9-上游-yolo-对接规范)
+10. [TF 树与 RViz 可视化](#10-tf-树与-rviz-可视化)
+11. [地面手持验证（起飞前必做）](#11-地面手持验证起飞前必做)
+12. [故障排查](#12-故障排查)
+13. [起飞前检查清单](#13-起飞前检查清单)
 
-2. 坐标系与原点约定
+---
 
-2.1 三个坐标系
-| 坐标系 | X | Y | Z | 说明 |
-| 相机光学系 | 图像右 | 图像下 | 光轴前方 | 标准针孔模型 |
-| 机体系 FLU | 机头 | 机身左 | 机身上方 | ROS / REP-103 标准 |
-| 世界系 ENU | 东 | 北 | 上 | MAVROS 里程计，原点 = 起飞点 |
+## 1. 项目简介
 
-MAVROS 输出姿态为 FLU → ENU，本节点直接使用其四元数，无需转换。
+`yolo_to_movebase` 是视觉导引链路的中间节点：上游 YOLO 节点发布 `vision_msgs/Detection2DArray` 格式的检测结果（像素级），本节点结合 MAVROS 里程计位姿，把像素坐标经过「像素系 → 相机系 → 机体系 → 世界系」四步变换解算为世界坐标，再加上偏移量发布 `/move_base_simple/goal`，交给 move_base 完成路径规划与飞行。
 
-2.2 所有目标坐标均以起飞原点为原点
-任何时刻解算出的目标坐标，都以起飞点为唯一原点，与检测瞬间飞机在哪无关：
+核心特性：
 
-t0: 起飞于 O=(0,0,0)
-t1: 飞到 (10,0,5) 发现目标1 → 目标1 = (13,1,3)      ← 以 O 为原点
-t2: 悬停在目标1上方又发现目标2 → 目标2 = (13,1,0)   ← 依然以 O 为原点
+- **多相机支持**：朝前、朝下相机可任意组合使用，每个相机拥有独立的一套配置（话题名、内参、安装外参、测距模式、偏移量），互不干扰。
+- **两种测距模式**（每个相机手动二选一）：
+  - `ground`：像素射线与地平面求交，深度来自里程计高度，**下视相机推荐**；
+  - `distance`：相似三角形，按目标真实尺寸反算距离，**前视相机推荐**。
+- **配置驱动**：切换相机组合只需改 launch 一个参数（`camera:=down/front/dual`），源码零修改。
+- **倾斜保护**：机体姿态角超过阈值时自动丢弃检测，防止像素误差被放大成地面位置误差。
+- **运行时可调**：测距模式支持运行时话题切换（含 `off` 关闭）；上游 YOLO 话题、里程计话题均支持 launch 命令行覆盖，不用改 yaml、不用重编译。
 
-飞机当前位置只是计算中的中间量，从不成为原点。因此所有目标坐标互相可比，可用于多目标任务规划。
+---
 
-2.3 两个例外
-- 飞控重启 / EKF 重置 → 原点重设，之前存的目标坐标全部作废，需重新检测
-- move_base 的全局坐标系必须也叫 world，且原点一致（同为起飞点）
+## 2. 系统架构与数据流
 
-3. 核心原理
+```
+        YOLOv8 上游节点                    MAVROS
+  vision_msgs/Detection2DArray      nav_msgs/Odometry
+   (像素框中心/框高/类别/置信度)      (位置+四元数姿态, ENU)
+          │                               │
+          ▼                               ▼
+  ┌───────────────────────────────────────────────┐
+  │              yolo_to_movebase_node            │
+  │                                               │
+  │  ① 选最高置信度检测      ④ 像素→相机系         │
+  │  ② 倾斜保护检查          ⑤ 相机系→机体系       │
+  │  ③ 距离范围过滤          ⑥ 机体系→世界系(起飞原点)│
+  │  ⑦ 加偏移 → 8s 节流发布                        │
+  └───────────────────────────────────────────────┘
+          │                        │
+          ▼                        ▼
+  /move_base_simple/goal      TF 广播
+  (geometry_msgs/PoseStamped) world→drone_current→cam_x
+                              world→target_*
+```
 
-3.1 坐标变换链
-像素
-│ ① 针孔反投影: X = (u−cx)·Z/fx ,  Y = (v−cy)·Z/fy     (Z 由测距模式给出)
-▼
-相机光学系 (x右 y下 z前)
-│ ② 安装旋转: R_cb = R(mount_rpy) × R(光学→FLU)
-▼
-机体系 FLU (x前 y左 z上)
-│ ③ 位姿变换: P_world = R(q_odom)·(t_mount + p_body) + T_drone
-▼
-世界系 ENU (起飞原点)
-│ ④ 叠加该相机的固定偏移 (x_offset, z_offset)
-▼
-/move_base_simple/goal
+### 2.1 话题接口总览
 
-3.2 两种测距模式
-每相机二选一，手动配置。
-| 模式 | 深度来源 | 适用场景 | 依赖条件 |
-| ground | 像素射线与地平面 z=ground_z 求交 | 下视相机，目标在地面 | 仅里程计高度，不需目标尺寸 |
-| distance | Z = fx × 目标真实高度 / 像素框高 | 前视相机 | 需配置各类目标真实尺寸 |
-
-3.3 模式选择决策
-目标是否位于已知高度的水平面上？（地面 / 楼顶平面）
-│
-├── 是（下视相机看地面目标）─────────► ✅ ground
-│
-└── 否（前视目标、悬空目标）
-    └── 目标真实高度已知且姿态稳定？（固定尺寸标志牌、车辆）
-        ├── 是 ────► ✅ distance
-        └── 否 ────► ❌ 需深度相机/激光，或改任务方案
-
-3.4 误差特性速记
-- ground：1 像素 ≈ 高度/fx 米（5 m 高 → 1 px ≈ 5 mm）；倾斜越大误差越大
-- distance：距离误差 ≈ 框高误差比（框 20 px 偏 1 px → 5% 误差），距离越远误差越大
-- 典型搭配：朝下 → ground；朝前 → distance（目标站在地面时朝前也可用 ground）
-
-4. 项目结构
-yolo_to_movebase/
-├── CMakeLists.txt                        # 编译规则
-├── package.xml                           # 包描述与依赖
-├── README.md
-├── include/yolo_to_movebase/
-│   └── camera_config.hpp                 # 相机配置结构体 + 旋转工具
-├── src/
-│   ├── camera_config.cpp                 # rosparam 读取相机配置
-│   └── yolo_to_movebase_node.cpp         # 主节点（变换/发布/TF/节流/模式切换）
-├── config/
-│   ├── cameras_down.yaml                 # 朝下相机专用配置
-│   ├── cameras_front.yaml                # 朝前相机专用配置
-│   └── cameras_dual.yaml                 # 双相机配置
-├── docs/
-│   └── upstream_yolo_format.md           # 上游 YOLO 发布格式规范（含模板代码）
-└── launch/
-    ├── yolo_to_movebase.launch           # 主入口, camera:=down/front/dual
-
-
-5. 编译
-sudo apt install ros-noetic-vision-msgs libeigen3-dev
-cd ~/catkin_ws/src
-git clone <本仓库>                 # 或手动拷贝本包
-cd ~/catkin_ws && catkin_make      # 或 catkin build
-source devel/setup.bash
-
-6. 运行与相机选择
-
-6.1 通过 launch 参数选择
-roslaunch yolo_to_movebase yolo_to_movebase.launch camera:=down    # 只用朝下相机（默认）
-roslaunch yolo_to_movebase yolo_to_movebase.launch camera:=front   # 只用朝前相机
-roslaunch yolo_to_movebase yolo_to_movebase.launch camera:=dual    # 双相机同时用
-
-roslaunch yolo_to_movebase down.launch                             # 便捷方式 = camera:=down
-roslaunch yolo_to_movebase front.launch                            # 便捷方式 = camera:=front
-
-参数自动加载对应的 config/cameras_<camera>.yaml。
-
-启动后核对日志摘要，确认只加载了预期的相机：
-YoloToMoveBase 启动 (C++/Noetic)
-  frame=world
-  full_attitude=true
-  delay=8.0s
-  [down] topic=/yolo_msgs_down mode=ground tilt_limit=15.0 offset=(0.00, 0.50)
-
-- 只有一行 [down] → ✅ 正确
-- 出现两行 → 检查 camera:= 参数
-
-⚠️ 双相机必须用 camera:=dual 在一个节点里跑。不要开两个终端分别起 down 和 front——节点重名会互相顶掉，且两个节点同时往 /move_base_simple/goal 发目标会打架。
-
-6.2 运行时切换测距模式（不重启节点）
-# 把下视相机切到 distance 模式
-rostopic pub -1 /yolo_to_movebase/set_depth_mode std_msgs/String "data: 'down:distance'"
-
-# 切回 ground
-rostopic pub -1 /yolo_to_movebase/set_depth_mode std_msgs/String "data: 'down:ground'"
-
-# 临时屏蔽某相机（丢弃其检测, 不解算不发布）
-rostopic pub -1 /yolo_to_movebase/set_depth_mode std_msgs/String "data: 'front:off'"
-
-格式：相机名:模式，模式 ∈ {ground, distance, off}，立即生效。
-- 节点重启后恢复 yaml 中的静态配置
-- 切换成功时日志打印：[down] 测距模式手动切换: ground -> distance
-
-7. 配置说明
-三个 yaml 按机分组（down / front / dual），启动前逐项核对 7.4 清单。
-
-7.1 全局参数
-| 参数 | 类型 | 单位 | 默认值 | 作用 | 设置不当的后果 |
-| world_frame | string | — | "world" | 世界坐标系名，也是目标点的 frame_id | 与 move_base 全局坐标系名不一致 → 目标点被拒或飞错位置 |
-| use_full_attitude | bool | — | true | 变换使用完整四元数（含 roll/pitch）；false 仅用 yaw（旧行为） | 设 false 时倾斜飞行误差大：5 m 高倾斜 10° ≈ 0.87 m；水平悬停时两者等价 |
-| publish_delay | double | 秒 | 8.0 | 两次目标点发布的最小间隔，间隔不足时自动延迟补发 | 太小 → move_base 频繁重规划震荡；太大 → 响应新目标慢 |
-| tf_rate | double | Hz | 10.0 | TF 广播频率 | 一般不用改 |
-| class_names | map | — | — | 类别 id → 名称，如 0: "person" | 与 real_sizes 对不上 → 该类检测被丢弃 |
-| cameras | list | — | — | 启用的相机名列表 | 漏配 → 启动报 FATAL 退出 |
-
-7.2 相机参数：基础与安装，（官方没的话有需要标定）
-| 参数 | 类型 | 单位 | 默认值 | 作用 | 设置不当的后果 |
-| topic | string | — | /yolo_msgs | 该相机的 Detection2DArray 话题 | 与上游实际话题不一致 → 永远收不到数据 |
-| fx fy | double | 像素 | 1000 | 相机焦距，像素 → 角度换算核心参数 | 必须填标定值。偏差直接变成比例性测距误差：fx 偏 10% = 距离偏 10% |
-| cx cy | double | 像素 | 640 / 360 | 光轴中心像素坐标（主点） | 必须填标定值。偏差导致目标系统性偏移 |
-| mount_rpy_deg | double[3] | 度 | [0,0,0] | 相机安装欧拉角。朝前 [0,0,0]；朝下（画面上方=机头）[0,90,0] | 下视画面方向不匹配 → 目标位置镜像/转 90°（镜像无法靠其他参数修复） |
-| mount_xyz | double[3] | 米 | [0,0,0] | 相机在机体中的安装位置（x前 y左 z上，相对飞控 IMU） | 精确导引（<0.2 m）才需量准；粗导引可忽略 |
-
-7.3 相机参数：测距与安全
-| 参数 | 类型 | 单位 | 默认值 | 作用 | 设置不当的后果 |
-| depth_mode | string | — | "ground" | 测距模式，见第 3 章。手动配置，节点不会自动切换 | 选错 → 结果系统性错误 |
-| ground_z | double | 米 | 0.0 | 仅 ground 模式。地面在世界系高度 | 填错 → 所有目标坐标偏移。地面起飞填 0 |
-| real_sizes | map | 米 | 空 | 仅 distance 模式。类别 → 真实高度 | 缺类别 → 检测被丢弃告警；尺寸错 → 距离成比例错 |
-| min_score | double | 0~1 | 0.5 | 置信度阈值，取分数最高且达标的检测 | 太低跟着误检飞；太高漏检。建议 0.4~0.6 |
-| min_range | double | 米 | 0.5 | 解算距离下限 | 太小 → 近距误检乱飞 |
-| max_range | double | 米 | 80 / 30 | 解算距离上限。distance 模式的关键安全参数 | 太大 → 远距测距误差被放大数倍。建议 down 10~15，front 20~30 |
-| max_tilt_deg | double | 度 | -1 | 机体倾斜超此值丢弃检测；-1 不限制。下视强烈建议设置（建议 10~20） | 不设 + 倾斜大 → 地面交点误差放大 |
-| x_offset | double | 米 | 0.0 | 目标点在世界系 X 方向固定偏移。是世界“东”方向，不随机头旋转 | 原意“目标前 0.1m”但机头朝南时方向反了 |
-| z_offset | double | 米 | 0.0 | 目标点在世界系 Z 方向固定偏移。下视悬停任务的核心参数 | 设 0 → 贴地飞向目标；下视悬停一般 0.5~2.0 |
-
-7.4 启动前核对清单
-- [ ] 各相机 topic 与上游 YOLO 实际话题完全一致
-- [ ] 内参 fx/fy/cx/cy 填的是标定值，不是占位值
-- [ ] 每个 depth_mode 按第 3 章决策选定
-- [ ] ground 模式：ground_z 与实际地面高度一致
-- [ ] distance 模式：real_sizes 覆盖所有检测类别
-- [ ] class_names 与模型输出 id 对应
-- [ ] 下视 mount_rpy_deg 与画面方向匹配（转机测试确认）
-- [ ] max_range 已按飞行高度上限收紧
-- [ ] z_offset 符合任务安全高度
-
-7.5 下视相机安装角速查
-转机测试：悬停 2 m，机头左转 90°，看画面里景物滚动方向：
-| 景物向哪滚 | 画面上方实际指向 | mount_rpy_deg |
-| 画面下方 | 机头 ✅ | [0, 90, 0] |
-| 画面左方 | 机体右 | [0, 90, -90] |
-| 画面右方 | 机体左 | [0, 90, 90] |
-| 画面上方 | 机尾 | [0, 90, 180] |
-
-画面是镜像的不能靠旋转修，必须在 YOLO 端翻转图像。
-
-8. 接口一览
-
-8.1 话题
 | 方向 | 话题 | 类型 | 说明 |
-| 订阅 | /mavros/local_position/odom | nav_msgs/Odometry | 无人机位姿（ENU，起飞原点） |
-| 订阅 | 各相机 topic（见 yaml） | vision_msgs/Detection2DArray | YOLO 检测结果 |
-| 订阅 | /yolo_to_movebase/set_depth_mode | std_msgs/String | 运行时切换模式，格式 相机名:模式 |
-| 发布 | /move_base_simple/goal | geometry_msgs/PoseStamped | 导航目标点（world 系） |
+|------|------|------|------|
+| 订阅 | 上游 YOLO（每相机一个，yaml 配置） | `vision_msgs/Detection2DArray` | 检测结果 |
+| 订阅 | `/mavros/local_position/odom`（默认，可覆盖） | `nav_msgs/Odometry` | 位姿来源 |
+| 订阅 | `/yolo_to_movebase/set_depth_mode` | `std_msgs/String` | 运行时切换测距模式 |
+| 发布 | `/move_base_simple/goal` | `geometry_msgs/PoseStamped` | 导航目标点 |
+| 发布 | TF | `tf2_msgs/TFMessage` | 机体/相机/目标可视化帧 |
 
-8.2 TF
+### 2.2 文件结构
+
+```
+yolo_to_movebase/
+├── CMakeLists.txt
+├── package.xml
+├── include/yolo_to_movebase/
+│   └── camera_config.hpp          # 相机配置结构体 + RPY→旋转矩阵等数学工具
+├── src/
+│   ├── yolo_to_movebase_node.cpp  # 主节点
+│   └── camera_config.cpp          # 从 rosparam 读取单相机配置
+├── config/
+│   ├── cameras_down.yaml          # 仅下视
+│   ├── cameras_front.yaml         # 仅前视
+│   └── cameras_dual.yaml          # 下视 + 前视
+├── launch/
+│   ├── yolo_to_movebase.launch    # 主入口（camera/话题参数可选）
+│   ├── down.launch                # 便捷入口 = camera:=down
+│   └── front.launch               # 便捷入口 = camera:=front
+```
+
+---
+
+## 3. 坐标系约定（必读）
+
+本节点涉及三个坐标系，**轴定义一旦搞混，解算结果必然镜像或旋转**，请先确认：
+
+| 坐标系 | 轴定义 | 在代码中的用途 |
+|--------|--------|----------------|
+| **相机光学系** | x 右，y 下，z 前（沿光轴） | 内参反投影的基准；`fx/fy/cx/cy` 定义在这里 |
+| **机体系 FLU** | x 前，y 左，z 上 | 安装外参 `mount_xyz / mount_rpy_deg` 的基准；与 MAVROS body 系一致 |
+| **世界系 ENU** | x 东，y 北，z 上 | 目标点输出的基准；`world_frame` 参数指定的帧 |
+
+### 3.1 原点语义（重要）
+
+- **所有解算出的目标坐标，原点永远是起飞点**（即里程计 odom 帧的原点），与检测那一刻飞机在哪儿**无关**。
+- 这意味着：飞机飞到哪，目标坐标都是「相对起飞点往东/北/上多少米」，直接可用，不需要再叠加飞机位置。
+- **原点绑定的是 odom 帧，不是本节点的生命周期**：重启本节点不会重置原点（它继续用当前 odom）。
+- **飞控/EKF 重置会让原点重新设定**：此时之前发出的所有目标坐标全部作废，必须重新检测。起飞后请勿重置 EKF2 或切换里程计源。
+
+---
+
+## 4. 坐标变换原理
+
+### 4.1 变换链总览
+
+```
+像素 (u, v)
+  │  ① 针孔反投影
+  ▼
+相机光学系:  d_cam = [ (u−cx)/fx , (v−cy)/fy , 1 ]
+  │  ② 安装外参  R_cb = R(mount_rpy) × R(光学→FLU)
+  ▼
+机体系 FLU
+  │  ③ 位姿变换  R_wb、T_wb 来自里程计（ENU）
+  ▼
+世界系(起飞原点):  P_world = T_wb + R_wb · ( mount_xyz + R_cb · p_cam )
+```
+
+- ①②③中，`R_cb` 在 `camera_config.hpp` 里由 `mount_rpy_deg` 自动合成（含「光学系→FLU」固定旋转），你只需要填物理安装角。
+- 姿态变换用**完整四元数**（`use_full_attitude: true`），倾斜时自动补偿。实测对比：5m 高、倾斜 10° 时，只用 yaw 的旧算法会差约 **0.87m**，完整姿态补偿后消除。
+- 水平悬停时完整姿态与仅 yaw 数学等价，参数 `use_full_attitude` 保留是为了与旧版结果对照。
+
+### 4.2 ground 模式（下视推荐）
+
+把像素方向还原成世界系下的射线，与地平面 `z = ground_z` 求交：
+
+```
+射线:  P(t) = C_world + t · d_world      C_world = 相机光心世界坐标
+求交:  t = (ground_z − C_world.z) / d_world.z
+```
+
+深度不依赖目标尺寸，只依赖里程计高度，因此**下视场景精度最高、最稳**。
+
+### 4.3 distance 模式（前视推荐）
+
+相似三角形，按目标真实高度反算深度：
+
+```
+Z = fx × H_real / h_px        H_real: 目标真实高度(m), h_px: 检测框高(像素)
+```
+
+深度只与内参、目标实际尺寸、框高有关，**不需要知道地面在哪**，适合前视看远处目标。依赖 yaml 中 `real_sizes` 的标定精度。
+
+> 深度 Z 确定后，两种模式都走同一套「光学系 → 机体系 → 世界系」反投影，只是 Z 的来源不同。
+
+---
+
+## 5. 编译方法与常见编译错误
+
+### 5.1 依赖安装
+
+```bash
+sudo apt install ros-noetic-vision-msgs libeigen3-dev
+source /opt/ros/noetic/setup.bash
+```
+
+> 若无法安装 apt 版 vision_msgs，可源码安装：
+> `cd ~/yolo_ws/src && git clone -b noetic https://github.com/ros-perception/vision_msgs.git`
+
+### 5.2 编译步骤
+
+```bash
+cd ~/yolo_ws/src
+# 把 yolo_to_movebase 包放进来
+cd ~/yolo_ws
+catkin_make
+source devel/setup.bash
+```
+
+### 5.3 常见编译错误
+
+| 错误现象 | 原因 | 解决 |
+|----------|------|------|
+| `cannot find -lvision_msgs` / 找不到头文件 | 包未安装，或终端没 source | `sudo apt install ros-noetic-vision-msgs` 后**重开终端**再 `source`、再编 |
+| Eigen `AngleAxis * AngleAxis` 赋给 `Matrix3d` 报错 | 链乘结果是四元数类型，不能隐式转换 | 显式加 `.toRotationMatrix()`（`camera_config.hpp` 中已处理，勿删） |
+| `results[0].id` 类型不匹配 | apt 版 vision_msgs 的 id 是 **int64**，源码新版是 string | 节点已做**双重载兼容**（int64/string 都能接），无需改动；自己扩展代码时注意 |
+
+---
+
+## 6. 配置文件详解
+
+三个 yaml 结构完全一致，只是 `cameras` 列表和相机段不同。**切换相机组合 = 换文件（launch 参数）**，不是改代码。
+
+### 6.1 全局参数
+
+| 参数 | 类型 | 默认 | 作用 | 设置不当的后果 |
+|------|------|------|------|----------------|
+| `world_frame` | string | `world` | 目标点与 TF 的父坐标系 | 与 move_base 全局系不一致 → 目标点错位 |
+| `use_full_attitude` | bool | `true` | 倾斜时用完整姿态补偿（false 仅用 yaw） | 大倾斜时 false 误差可达米级 |
+| `publish_delay` | double | `8.0` | 两次发布的最小间隔（秒） | 太小 → 目标点频繁跳变；太大 → 响应迟钝 |
+| `tf_rate` | double | `10.0` | TF 广播频率（Hz） | 过低 → RViz 里帧抖动 |
+| `class_names` | map | — | 类别 id → 名称，如 `{0: person}` | 缺项时日志显示 `class_0`，distance 模式查不到 real_sizes |
+| `odom_topic` | string | `/mavros/local_position/odom` | 里程计话题（launch `odom_topic:=` 可覆盖） | 名字错 → 收不到位姿，节点一直提示丢弃检测 |
+
+### 6.2 相机参数（每个相机一段，段名 = cameras 列表中的名字）
+
+| 参数 | 类型 | 默认/示例 | 作用 | 设置不当的后果 |
+|------|------|-----------|------|----------------|
+| `topic` | string | `/yolo_msgs_down` | 该相机的上游 YOLO 话题（launch `down_topic:=` 可覆盖） | 对不上 → 永远收不到检测 |
+| `fx` / `fy` | double | 1000.0（**占位**） | 焦距（像素） | 距离成比例偏差，**必须标定替换** |
+| `cx` / `cy` | double | 640.0 / 360.0（**占位**） | 光心（像素，720p 下） | 目标位置整体平移 |
+| `mount_xyz` | list | `[0,0,-0.05]` | 相机光心在机体系的安装位置（FLU，米） | 近距离目标偏差明显 |
+| `mount_rpy_deg` | list | 朝下 `[0,90,0]`；朝前 `[0,0,0]` | 安装朝向（度，FLU 顺序） | **方向错误 → 目标镜像/旋转**，最常见的坑 |
+| `depth_mode` | string | `ground` / `distance` / `off` | 测距模式 | `ground` 用在前视会因射线平行地面而失败 |
+| `ground_z` | double | `0.0` | 地平面高度（世界系，米），ground 模式必填 | 不为 0 时没填 → 交点整体缩放错 |
+| `real_sizes` | map | `{person: 1.7, car: 1.5}` | 类别真实高度（米），distance 模式必填 | 尺寸错 → 距离按比例错 |
+| `min_score` | double | `0.5` | 置信度门槛 | 太低 → 误检触发导航 |
+| `min_range` / `max_range` | double | `0.5` / `15.0` | 有效距离区间（米），区间外丢弃 | 太宽 → 远处误检也算数 |
+| `max_tilt_deg` | double | `15.0` | 倾斜保护阈值（度），`0` = 禁用 | 禁用后大倾斜时位置误差被放大 |
+| `x_offset` / `z_offset` | double | `0.0` / `0.5` | 发布前目标点偏移（**世界系 ENU 方向，不随机头旋转**） | 太大 → 落点偏离目标 |
+
+### 6.3 示例：cameras_down.yaml（节选）
+
+```yaml
+world_frame: world
+use_full_attitude: true
+publish_delay: 8.0
+tf_rate: 10.0
+
+class_names:
+  0: person
+  1: car
+
+cameras: [down]
+
+down:
+  topic: /yolo_msgs_down
+  fx: 1000.0            # ← 占位值, 标定后替换!
+  fy: 1000.0
+  cx: 640.0
+  cy: 360.0
+  mount_xyz: [0.0, 0.0, -0.05]
+  mount_rpy_deg: [0.0, 90.0, 0.0]   # 朝下
+  depth_mode: ground
+  ground_z: 0.0
+  min_score: 0.5
+  min_range: 0.5
+  max_range: 15.0
+  max_tilt_deg: 15.0
+  x_offset: 0.0
+  z_offset: 0.5
+```
+
+`cameras_front.yaml` 的差异点：`cameras: [front]`、`mount_rpy_deg: [0.0, 0.0, 0.0]`、`depth_mode: distance`、增加 `real_sizes: {person: 1.7, car: 1.5}`、偏移 `x_offset: 0.1 / z_offset: 1.3`。`cameras_dual.yaml` 则是 `cameras: [down, front]` 且两个相机段都写全。
+
+---
+
+## 7. Launch 启动与话题调整
+
+### 7.1 主入口完整参数
+
+```bash
+# 基本用法（三选一，决定加载哪个 yaml）
+roslaunch yolo_to_movebase yolo_to_movebase.launch camera:=down
+roslaunch yolo_to_movebase yolo_to_movebase.launch camera:=front
+roslaunch yolo_to_movebase yolo_to_movebase.launch camera:=dual
+```
+
+| launch 参数 | 默认 | 作用 |
+|-------------|------|------|
+| `camera` | `down` | 选择加载 `config/cameras_$(arg camera).yaml` |
+| `down_topic` | 空 | **临时覆盖** down 相机的上游 YOLO 话题 |
+| `front_topic` | 空 | **临时覆盖** front 相机的上游 YOLO 话题 |
+| `odom_topic` | 空 | **临时覆盖** 里程计话题（源码默认 `/mavros/local_position/odom`） |
+
+**覆盖规则：留空 = 用 yaml / 源码里的默认值；命令行传了就覆盖。** yaml 是持久配置，命令行是当次启动的临时覆盖，互不冲突。
+
+### 7.2 临时换话题（不改 yaml、不改源码）
+
+```bash
+# 换上游 YOLO 话题
+roslaunch yolo_to_movebase yolo_to_movebase.launch camera:=down down_topic:=/darknet_ros/bounding_boxes
+
+# 换里程计来源（例如自己的 EKF 输出）
+roslaunch yolo_to_movebase yolo_to_movebase.launch camera:=down odom_topic:=/odometry/global
+
+# dual 模式全部覆盖
+roslaunch yolo_to_movebase yolo_to_movebase.launch camera:=dual \
+    down_topic:=/yolo/down_result front_topic:=/yolo/front_result odom_topic:=/odometry/global
+```
+
+换之前先确认上游真的在发、且类型正确：
+
+```bash
+rostopic list | grep -i yolo
+rostopic info /yolo_msgs_down      # 必须是 vision_msgs/Detection2DArray
+rostopic list | grep -i odom
+rostopic info /odometry/global     # 必须是 nav_msgs/Odometry
+```
+
+### 7.3 便捷入口
+
+`down.launch` / `front.launch` 是主入口的薄封装（`camera` 固定为 down/front）。若想通过它们透传话题参数，需在入口里自行加一行 `<arg>` 声明并传入 include，例如：
+
+```xml
+<launch>
+  <arg name="down_topic" default=""/>
+  <include file="$(find yolo_to_movebase)/launch/yolo_to_movebase.launch">
+    <arg name="camera" value="down"/>
+    <arg name="down_topic" value="$(arg down_topic)"/>
+  </include>
+</launch>
+```
+
+---
+
+## 8. 运行时测距模式切换
+
+不重启节点，用话题切换单个相机的测距模式。**格式：`相机名:模式`**：
+
+```bash
+# 切 ground
+rostopic pub -1 /yolo_to_movebase/set_depth_mode std_msgs/String "data: 'down:ground'"
+# 切 distance
+rostopic pub -1 /yolo_to_movebase/set_depth_mode std_msgs/String "data: 'front:distance'"
+# 关闭某相机（完全不再处理它的检测）
+rostopic pub -1 /yolo_to_movebase/set_depth_mode std_msgs/String "data: 'down:off'"
+```
+
+行为说明：
+
+- 支持 `ground` / `distance` / `off` 三种，格式错误或相机名不存在会打 WARN 并忽略；
+- 切换**只改内存**，节点重启后回到 yaml 里配置的模式，**yaml 仍是唯一持久配置**；
+- 节点是单线程 spin，切换与检测回调天然串行，任意时刻切换都安全。
+
+---
+
+## 9. 上游 YOLO 对接规范
+
+上游 YOLO 节点必须发布 **`vision_msgs/Detection2DArray`**，字段要求：
+
+| 字段 | 含义 | 节点怎么用 |
+|------|------|-----------|
+| `detections[i].bbox.center.x / .y` | 检测框**中心**像素坐标（原点：图像左上） | 反投影的 (u, v) |
+| `detections[i].bbox.size_y` | 检测框高度（像素） | distance 模式算深度 |
+| `detections[i].results[0].id` | 类别索引（**apt 版 vision_msgs 是 int64**） | 查 `class_names` 与 `real_sizes` |
+| `detections[i].results[0].score` | 置信度 | 与 `min_score` 比较，多目标取最高分 |
+
+> 注意：apt 安装的 ros-noetic-vision-msgs 中 `id` 是 **int64**，发布端 `hyp.id = int(cls_id)`，**不要写 `str`**。多个检测全发过来即可，节点内部自动选置信度最高且达标的那个。
+
+### 9.1 最小发布模板（Python）
+
+```python
+import rospy
+from vision_msgs.msg import Detection2DArray, Detection2D, ObjectHypothesis
+
+rospy.init_node('yolo_publisher')
+pub = rospy.Publisher('/yolo_msgs_down', Detection2DArray, queue_size=1)
+
+def publish_dets(dets):                       # dets: [(cls_id, conf, u, v, h_px), ...]
+    msg = Detection2DArray()
+    msg.header.stamp = rospy.Time.now()
+    msg.header.frame_id = 'camera_optical'    # 仅标识用, 不参与解算
+    for cls_id, conf, u, v, h_px in dets:
+        d = Detection2D()
+        d.bbox.center.x = float(u)
+        d.bbox.center.y = float(v)
+        d.bbox.size_y = float(h_px)           # distance 模式必需
+        hyp = ObjectHypothesis()
+        hyp.id = int(cls_id)                  # int64, 不是 str!
+        hyp.score = float(conf)
+        d.results.append(hyp)
+        msg.detections.append(d)
+    pub.publish(msg)
+```
+
+完整规范与注意事项见 `docs/upstream_yolo_format.md`。
+
+---
+
+## 10. TF 树与 RViz 可视化
+
+节点以 `tf_rate`（默认 10Hz）广播以下 TF：
+
+```
 world
-├── drone_current                 # 无人机当前位姿
-│   ├── cam_front                 # 前视相机安装位姿（启用时）
-│   └── cam_down                  # 下视相机安装位姿（启用时）
-├── target_original_<相机名>       # 最近解算的原始目标位置
-├── target_final_<相机名>          # 加偏移后的最终目标位置
-└── target_<序号>_<相机>_<类别>    # 历史检测过的目标（世界系）
+└── drone_current                机体当前位姿（来自里程计）
+    ├── cam_down                 下视相机（安装外参, 跟随机体）
+    └── cam_front                前视相机
 
-RViz 添加 TF 显示即可查看。
+world
+├── target_original_<cam>        最近一次解算的原始目标点
+├── target_final_<cam>           加偏移后的最终目标点（= 实际发布值）
+└── target_0_down_person ...     历史检测目标缓存（按 相机/类别 记忆）
+```
 
-9. 验证方法
+- 相机帧挂在 `drone_current` **之下**，RViz 中会跟着飞机移动；如果看到相机帧钉在起飞点不动，说明跑的是 TF 修复前的旧版本代码，更新 `broadcastTf()`。
+- 验证 TF 树：`rosrun rqt_tf_tree rqt_tf_tree`，确认无断链。
+- 观察目标点输出：`rostopic echo /move_base_simple/goal`，或 RViz 添加 Pose 显示该话题。
 
-9.1 地面手持测试
-不起飞，能抓出 90% 配置错误：
-1. 地上贴胶带 X，量好它相对起飞点的真实位置
-2. 手持飞机对准目标，看日志输出的世界坐标：
-   - 误差 < 0.3 m 且方向对 → ✅ 配置正确
-   - 左右镜像 → 下视 mount_rpy_deg 错，见 7.5
-   - 距离差固定比例 → fx 标定值错
-   - 报“未配置 real_sizes” → class_names 与 real_sizes 对不上
-3. 转动机身 yaw 45° 再测同一点，坐标应基本不变；变化大 → 姿态补偿或安装角有问题
+---
 
-9.2 悬停飞行测试
-| # | 测试 | 期望结果 |
-| 1 | 悬停在目标正上方 5 m（下视） | 目标 x/y ≈ 无人机水平位置，z ≈ 0 |
-| 2 | 机体倾斜 10° 再检测 | 开完整补偿后误差显著减小 |
-| 3 | RViz 查看 TF | cam_down Z 轴朝下，target_final_* 落在预期悬停点 |
+## 11. 地面手持验证（起飞前必做）
 
-10. 故障排查
-| 现象 | 原因 | 解决 |
-| 目标位置镜像/颠倒 | 下视画面方向与 mount_rpy_deg 不匹配 | 按 7.5 修正（镜像须在 YOLO 端翻图） |
-| 位置数值离谱 | 上游发布了归一化坐标 | 上游改用像素单位 |
-| 前视距离忽远忽近 | 上游 size_y 错误/归一化，或目标姿态变化 | 确认像素框高；改用 ground 模式 |
-| 目标位置系统性偏移固定量 | cx/cy 不准，或图像被裁剪缩放 | 重新标定；上游坐标换回原图尺度 |
-| 距离越远误差越大 | distance 模式固有特性 | 收紧 max_range；或换 ground |
-| 倾斜时下视结果漂移 | 未开完整补偿或未设 max_tilt_deg | use_full_attitude: true + 设倾斜上限 |
-| 检测到了但无日志 | score 低于 min_score / 话题名不一致 | 调低阈值或核对话题 |
-| 提示“未配置 real_sizes” | distance 模式缺类别尺寸 | 补 yaml，或改用 ground 模式 |
-| 目标点很久才发一次 | publish_delay 节流（默认 8 s） | 按需调整 |
-| 高速移动时坐标有偏差 | 图像延迟 + 位姿非同步 | 见上游规范 stamp 约定 |
-| 旧目标坐标突然全错 | 飞控/EKF 重置导致原点重设 | 重新检测所有目标 |
+不用起飞就能抓出 90% 的配置错误，流程 10 分钟：
 
-11. 相关文档
-- 上游 YOLO 节点发布格式规范
-  上游节点如何发布 Detection2DArray 才能被正确解算，含发布节点模板代码、双相机 launch 示例与自检清单。
-- 整合说明（相比之前散落的各版）：
-  待补充。
+1. 在地面贴两条胶带，标记一个 **X**，卷尺量下它相对飞机**摆放原点的真实位置**（米）。
+2. 手持飞机（保持相机真实安装朝向），把飞机摆到原点。
+3. 让上游 YOLO 检测 X 附近的参照物（或请人站在 X 上），观察节点日志：
+   ```
+   [down] 目标世界坐标: (x.xx, y.yy, z.zz)  距离: x.xx m
+   ```
+4. **对比日志坐标与卷尺实测值**：
+
+| 现象 | 大概率原因 |
+|------|-----------|
+| 方向整体镜像（左变右 / 前变后） | `mount_rpy_deg` 错（尤其下视的 90°） |
+| 距离成比例偏大/偏小 | `fx` 未标定（还是占位值）或 `real_sizes` 不准 |
+| 位置整体平移固定量 | `cx/cy` 或 `mount_xyz` 不准 |
+| 高度相关的缩放误差 | `ground_z` 没填对 |
+
+手持验证通过（误差 < 0.3m）再上飞机，能省掉大量空中排错时间。
+
+---
+
+## 12. 故障排查
+
+| 现象 | 可能原因 | 处理 |
+|------|----------|------|
+| 启动即 FATAL「缺少参数 cameras」 | yaml 没被加载 | 检查 launch 里 `config` 路径与 `camera` 参数拼写 |
+| 永远没有「检测到 xxx」日志 | 上游话题名/类型不对 | `rostopic info` 确认是 `Detection2DArray`；或用 `down_topic:=` 覆盖 |
+| 一直「尚未收到里程计，丢弃检测结果」 | odom 话题名/类型不对 | `rostopic info` 确认 `nav_msgs/Odometry`；用 `odom_topic:=` 覆盖 |
+| 「距离 xxm 超出 [a, b]」频繁出现 | `min/max_range` 太窄或内参太离谱 | 放宽区间排查，修好内参后再收紧 |
+| 「机体倾斜 xx° > xx°，丢弃检测」 | `max_tilt_deg` 太小或悬停不稳 | 适当放宽，或改善姿态控制 |
+| 检测到了但不发 goal | 8s 节流窗口内 | 属正常节流，看「x.x s 后发布目标点」日志 |
+| 发布的 goal 类别显示 `class_3` | `class_names` 缺该 id | 在 yaml 补 `3: 类别名` |
+| RViz 里相机帧不跟飞机 | 旧版代码 TF 父帧写死 world | 更新为最新 `broadcastTf()`（相机挂 `drone_current` 下） |
+| 目标坐标「漂」，飞着飞着不准 | 起飞后重置过 EKF / 里程计源切换 | 重置后原点变了，旧目标作废，重新检测 |
+
+---
+
+## 13. 起飞前检查清单
+
+- [ ] 两台相机**内参已实际标定**并写入 yaml（不再是 1000/640/360 占位值）
+- [ ] 下视相机 `mount_rpy_deg: [0, 90, 0]`、前视 `[0, 0, 0]` 已实机核对
+- [ ] `mount_xyz` 按实际安装位置量取填写
+- [ ] `real_sizes` 用实物量过（人 1.7m 只是参考）
+- [ ] `max_range` 收紧到实际作业距离（下视建议 10~15，前视建议 20~30）
+- [ ] 第 11 章手持地面验证通过（误差 < 0.3m）
+- [ ] `rostopic info` 确认上游话题是 `Detection2DArray`、odom 是 `Odometry`
+- [ ] 知悉原点语义：起飞后**不重置 EKF**，否则历史目标全部作废
+- [ ] `publish_delay`、`x_offset/z_offset` 按任务需求确认
+````
+
+存好之后建议直接放项目里：`~/yolo_ws/src/yolo_to_movebase/README.md`，桌面留一份当快捷查阅也行。
