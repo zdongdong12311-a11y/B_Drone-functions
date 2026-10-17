@@ -457,5 +457,3 @@ world
 - [ ] 知悉原点语义：起飞后**不重置 EKF**，否则历史目标全部作废
 - [ ] `publish_delay`、`x_offset/z_offset` 按任务需求确认
 ````
-
-存好之后建议直接放项目里：`~/yolo_ws/src/yolo_to_movebase/README.md`，桌面留一份当快捷查阅也行。
