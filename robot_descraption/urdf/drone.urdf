@@ -60,7 +60,13 @@
   <!-- ===================== MID-360 LiDAR ===================== -->
   <link name="lidar_link">
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <!--
+        The MID-360 `lidar_link` is the official optical frame. It is offset
+        from the housing centre and about 2.412 cm above the geometric centre
+        of the 60 mm-tall housing. Offset the visual cylinder so the housing
+        is centred over the FC and its bottom sits on the FC top surface.
+      -->
+      <origin xyz="0.011 0.02329 -0.02412" rpy="0 0 0"/>
       <geometry>
         <!-- approximate MID-360: 65 mm diameter x 60 mm high -->
         <cylinder radius="0.0325" length="0.06"/>
@@ -69,7 +75,7 @@
     </visual>
 
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin xyz="0.011 0.02329 -0.02412" rpy="0 0 0"/>
       <geometry>
         <cylinder radius="0.0325" length="0.06"/>
       </geometry>
