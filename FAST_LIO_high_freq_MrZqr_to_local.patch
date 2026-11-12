@@ -1,0 +1,2312 @@
+diff --git a/.gitignore b/.gitignore
+index 681617a..5d947ca 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,8 +1,18 @@
+-build
+-Log/*.png
+-Log/*.txt
+-Log/*.csv
+-Log/*.pdf
+-.vscode/c_cpp_properties.json
+-.vscode/settings.json
+-PCD/*.pcd
+\ No newline at end of file
++# Build and Release Folders
++bin-debug/
++bin-release/
++[Oo]bj/
++[Bb]in/
++
++# Other files and folders
++.settings/
++
++# Executables
++*.swf
++*.air
++*.ipa
++*.apk
++
++# Project files, i.e. `.project`, `.actionScriptProperties` and `.flexProperties`
++# should NOT be excluded as they contain compiler settings and other important
++# information for Eclipse / Flash Builder.
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index a9fe3d6..8b78e3e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,5 +1,5 @@
+ cmake_minimum_required(VERSION 2.8.3)
+-project(fastlio_high_freq)
++project(fast_lio)
+ 
+ SET(CMAKE_BUILD_TYPE "Debug")
+ 
+@@ -51,7 +51,7 @@ find_package(catkin REQUIRED COMPONENTS
+   std_msgs
+   pcl_ros
+   tf
+-  livox_ros_driver
++  livox_ros_driver2
+   message_generation
+   eigen_conversions
+   genmsg
+@@ -80,13 +80,12 @@ generate_messages(
+ )
+ 
+ catkin_package(
+-  CATKIN_DEPENDS geometry_msgs nav_msgs roscpp rospy std_msgs message_runtime sensor_msgs
++  CATKIN_DEPENDS geometry_msgs nav_msgs roscpp rospy std_msgs message_runtime
+   DEPENDS EIGEN3 PCL
+   INCLUDE_DIRS
+ )
+ 
+-add_executable(fastlio_high_freq_se src/laserMapping.cpp include/ikd-Tree/ikd_Tree.cpp src/preprocess.cpp)
+-target_link_libraries(fastlio_high_freq_se ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${PYTHON_LIBRARIES} )
+-target_include_directories(fastlio_high_freq_se PRIVATE ${PYTHON_INCLUDE_DIRS} )
+-
+-target_compile_features(fastlio_high_freq_se PUBLIC cxx_std_11)
++add_executable(fastlio_mapping src/laserMapping.cpp include/ikd-Tree/ikd_Tree.cpp src/preprocess.cpp)
++target_link_libraries(fastlio_mapping ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${PYTHON_LIBRARIES})
++target_include_directories(fastlio_mapping PRIVATE ${PYTHON_INCLUDE_DIRS})
++add_dependencies(fastlio_mapping fast_lio_generate_messages_cpp)
+diff --git a/Log/plot.py b/Log/plot.py
+index 1fc7eb8..e4aad85 100644
+--- a/Log/plot.py
++++ b/Log/plot.py
+@@ -22,12 +22,12 @@ axs[2,1].set_title('ba')
+ axs[3,1].set_title('Gravity')
+ for i in range(1,4):
+     for j in range(8):
+-        axs[j%4, j//4].plot(time, a_pre[:,i+j*3],'.-', label=lab_pre[i])
+-        axs[j%4, j//4].plot(time, a_out[:,i+j*3],'.-', label=lab_out[i])
++        axs[j%4, j/4].plot(time, a_pre[:,i+j*3],'.-', label=lab_pre[i])
++        axs[j%4, j/4].plot(time, a_out[:,i+j*3],'.-', label=lab_out[i])
+ for j in range(8):
+     # axs[j].set_xlim(386,389)
+-    axs[j%4, j//4].grid()
+-    axs[j%4, j//4].legend()
++    axs[j%4, j/4].grid()
++    axs[j%4, j/4].legend()
+ plt.grid()
+ #######for ikfom#######
+ 
+diff --git a/README.md b/README.md
+index 0551bea..be9c31e 100644
+--- a/README.md
++++ b/README.md
+@@ -1,104 +1,180 @@
+-- This repo is a high frequency version of the original FAST-LIO2. The high frequency property is achieved by predicting the state in real time with every new IMU data, instead of buffering them and make prediction when new LiDAR data arrives (which is the implementation of the original FAST-LIO2).
+-- **WARNING:** Since the odometry state between LiDAR updates are done by purely integrating the IMU, published state might appear jittering compared to the original FAST-LIO2. Please **make tests** before integrating this repo into your production environment!
++# FAST-LIO 中文说明文档（高频率里程计输出，带重力对齐功能）
+ 
+-## Usage
+-```
+-    cd ~/$A_ROS_DIR$/src
+-    git clone https://github.com/Mr-Zqr/FAST_LIO_high_freq.git --depth 1
+-    cd FAST_LIO_high_freq
+-    git submodule update --init
+-    cd ../..
+-    catkin_make
+-    source devel/setup.bash
+-```
+----
+-## Related Works and Extended Application
++## 相关工作与扩展应用
++
++### SLAM 相关
++
++1. [ikd-Tree](https://github.com/hku-mars/ikd-Tree)：面向3D近邻搜索的先进动态KD-Tree
++
++2. [R2LIVE](https://github.com/hku-mars/r2live)：以FAST-LIO为激光雷达-惯性前端的高精度激光雷达-惯性-视觉融合方案
++
++3. [LI_Init](https://github.com/hku-mars/LiDAR_IMU_Init)：鲁棒、实时的激光雷达-IMU外参标定与时间同步工具包
++
++4. [FAST-LIO-LOCALIZATION](https://github.com/HViktorTsoi/FAST_LIO_LOCALIZATION)：集成重定位功能模块的FAST-LIO
++
++### 控制与规划相关
++
++1. [IKFOM](https://github.com/hku-mars/IKFoM)：面向流形的快速高精度卡尔曼滤波工具包
+ 
+-**SLAM:**
++2. [UAV Avoiding Dynamic Obstacles](https://github.com/hku-mars/dyn_small_obs_avoidance)：FAST-LIO在机器人规划中的落地实现之一
+ 
+-1. [ikd-Tree](https://github.com/hku-mars/ikd-Tree): A state-of-art dynamic KD-Tree for 3D kNN search.
+-2. [R2LIVE](https://github.com/hku-mars/r2live): A high-precision LiDAR-inertial-Vision fusion work using FAST-LIO as LiDAR-inertial front-end.
+-3. [LI_Init](https://github.com/hku-mars/LiDAR_IMU_Init): A robust, real-time LiDAR-IMU extrinsic initialization and synchronization package..
+-4. [FAST-LIO-LOCALIZATION](https://github.com/HViktorTsoi/FAST_LIO_LOCALIZATION): The integration of FAST-LIO with **Re-localization** function module.
++3. [UGV Demo](https://www.youtube.com/watch?v=wikgrQbE6Cs)：基于可微流形的模型预测控制轨迹跟踪方案
+ 
+-**Control and Plan:**
++4. [Bubble Planner](https://arxiv.org/abs/2202.12177)：基于后退视距走廊的四旋翼高速平滑轨迹规划方法
+ 
+-1. [IKFOM](https://github.com/hku-mars/IKFoM): A Toolbox for fast and high-precision on-manifold Kalman filter.
+-2. [UAV Avoiding Dynamic Obstacles](https://github.com/hku-mars/dyn_small_obs_avoidance): One of the implementation of FAST-LIO in robot's planning.
+-3. [UGV Demo](https://www.youtube.com/watch?v=wikgrQbE6Cs): Model Predictive Control for Trajectory Tracking on Differentiable Manifolds.
+-4. [Bubble Planner](https://arxiv.org/abs/2202.12177): Planning High-speed Smooth Quadrotor Trajectories using Receding Corridors.
++## FAST-LIO 简介
+ 
+-<!-- 10. [**FAST-LIVO**](https://github.com/hku-mars/FAST-LIVO): Fast and Tightly-coupled Sparse-Direct LiDAR-Inertial-Visual Odometry. -->
++FAST-LIO（Fast LiDAR-Inertial Odometry）是一款计算高效、鲁棒性强的激光雷达-惯性里程计工具包。通过紧耦合迭代扩展卡尔曼滤波融合激光雷达特征点与IMU数据，可在高速运动、噪声干扰或特征退化的复杂环境中实现稳定导航。本工具包解决了多个核心问题：
+ 
+-## FAST-LIO
+-**FAST-LIO** (Fast LiDAR-Inertial Odometry) is a computationally efficient and robust LiDAR-inertial odometry package. It fuses LiDAR feature points with IMU data using a tightly-coupled iterated extended Kalman filter to allow robust navigation in fast-motion, noisy or cluttered environments where degeneration occurs. Our package address many key issues:
+-1. Fast iterated Kalman filter for odometry optimization;
+-2. Automaticaly initialized at most steady environments;
+-3. Parallel KD-Tree Search to decrease the computation;
++1. 面向里程计优化的快速迭代卡尔曼滤波
++
++2. 多数平稳环境下可自动初始化
++
++3. 并行KD-Tree搜索，降低计算开销
++
++## FAST-LIO 2.0（2021-07-05 更新）
+ 
+-## FAST-LIO 2.0 (2021-07-05 Update)
+-<!-- ![image](doc/real_experiment2.gif) -->
+-<!-- [![Watch the video](doc/real_exp_2.png)](https://youtu.be/2OvjGnxszf8) -->
+ <div align="left">
++
+ <img src="doc/real_experiment2.gif" width=49.6% />
++
+ <img src="doc/ulhkwh_fastlio.gif" width = 49.6% >
++
+ </div>
+ 
+-**Related video:**  [FAST-LIO2](https://youtu.be/2OvjGnxszf8),  [FAST-LIO1](https://youtu.be/iYCY6T79oNU)
++**相关视频**：[FAST-LIO2](https://youtu.be/2OvjGnxszf8)、[FAST-LIO1](https://youtu.be/iYCY6T79oNU)
++
++**算法流程**：
+ 
+-**Pipeline:**
+ <div align="center">
++
+ <img src="doc/overview_fastlio2.svg" width=99% />
++
+ </div>
+ 
+-**New Features:**
+-1. Incremental mapping using [ikd-Tree](https://github.com/hku-mars/ikd-Tree), achieve faster speed and over 100Hz LiDAR rate.
+-2. Direct odometry (scan to map) on Raw LiDAR points (feature extraction can be disabled), achieving better accuracy.
+-3. Since no requirements for feature extraction, FAST-LIO2 can support many types of LiDAR including spinning (Velodyne, Ouster) and solid-state (Livox Avia, Horizon, MID-70) LiDARs, and can be easily extended to support more LiDARs.
+-4. Support external IMU.
+-5. Support ARM-based platforms including Khadas VIM3, Nivida TX2, Raspberry Pi 4B(8G RAM).
++### 新增特性
++
++1. 基于[ikd-Tree](https://github.com/hku-mars/ikd-Tree)的增量式建图，实现更快运行速度，支持超100Hz激光雷达数据输入
++
++2. 基于原始激光雷达点云的直接里程计（扫描到地图匹配，可关闭特征提取），精度更优
++
++3. 无需特征提取，支持多种激光雷达类型（包括机械式：Velodyne、Ouster；固态式：Livox Avia、Horizon、MID-70），可轻松扩展适配更多雷达
++
++4. 支持外接IMU
+ 
+-**Related papers**: 
++5. 支持ARM平台，包括Khadas VIM3、英伟达TX2、树莓派4B（8G内存）
+ 
+-[FAST-LIO2: Fast Direct LiDAR-inertial Odometry](doc/Fast_LIO_2.pdf)
++### 相关论文
+ 
+-[FAST-LIO: A Fast, Robust LiDAR-inertial Odometry Package by Tightly-Coupled Iterated Kalman Filter](https://arxiv.org/abs/2010.08196)
++- [FAST-LIO2: Fast Direct LiDAR-inertial Odometry](doc/Fast_LIO_2.pdf)
+ 
+-**Contributors**
++- [FAST-LIO: A Fast, Robust LiDAR-inertial Odometry Package by Tightly-Coupled Iterated Kalman Filter](https://arxiv.org/abs/2010.08196)
+ 
+-[Wei Xu 徐威](https://github.com/XW-HKU)，[Yixi Cai 蔡逸熙](https://github.com/Ecstasy-EC)，[Dongjiao He 贺东娇](https://github.com/Joanna-HE)，[Fangcheng Zhu 朱方程](https://github.com/zfc-zfc)，[Jiarong Lin 林家荣](https://github.com/ziv-lin)，[Zheng Liu 刘政](https://github.com/Zale-Liu), [Borong Yuan](https://github.com/borongyuan)
++### 贡献者
+ 
+-<!-- <div align="center">
+-    <img src="doc/results/HKU_HW.png" width = 49% >
+-    <img src="doc/results/HKU_MB_001.png" width = 49% >
+-</div> -->
++[徐威 Wei Xu](https://github.com/XW-HKU)、[蔡逸熙 Yixi Cai](https://github.com/Ecstasy-EC)、[贺东娇 Dongjiao He](https://github.com/Joanna-HE)、[朱方程 Fangcheng Zhu](https://github.com/zfc-zfc)、[林家荣 Jiarong Lin](https://github.com/ziv-lin)、[刘政 Zheng Liu](https://github.com/Zale-Liu)、[Borong Yuan](https://github.com/borongyuan)
+ 
+-## 1. Prerequisites
+-### 1.1 **Ubuntu** and **ROS**
+-**Ubuntu >= 16.04**
++## 1. 依赖环境
+ 
+-For **Ubuntu 18.04 or higher**, the **default** PCL and Eigen is enough for FAST-LIO to work normally.
++### 1.1 Ubuntu 与 ROS
+ 
+-ROS    >= Melodic. [ROS Installation](http://wiki.ros.org/ROS/Installation)
++- Ubuntu 版本 ≥ 16.04
+ 
+-### 1.2. **PCL && Eigen**
+-PCL    >= 1.8,   Follow [PCL Installation](http://www.pointclouds.org/downloads/linux.html).
++- Ubuntu 18.04 及以上版本，默认安装的PCL和Eigen即可满足FAST-LIO运行需求
+ 
+-Eigen  >= 3.3.4, Follow [Eigen Installation](http://eigen.tuxfamily.org/index.php?title=Main_Page).
++- ROS 版本 ≥ Melodic，[ROS安装教程](http://wiki.ros.org/ROS/Installation)
+ 
+-### 1.3. **livox_ros_driver**
+-Follow [livox_ros_driver Installation](https://github.com/Livox-SDK/livox_ros_driver).
++### 1.2 PCL 与 Eigen
+ 
+-*Remarks:*
+-- Since the FAST-LIO must support Livox serials LiDAR firstly, so the **livox_ros_driver** must be installed and **sourced** before run any FAST-LIO luanch file.
+-- How to source? The easiest way is add the line ``` source $Licox_ros_driver_dir$/devel/setup.bash ``` to the end of file ``` ~/.bashrc ```, where ``` $Licox_ros_driver_dir$ ``` is the directory of the livox ros driver workspace (should be the ``` ws_livox ``` directory if you completely followed the livox official document).
++- PCL 版本 ≥ 1.8，[PCL安装教程](http://www.pointclouds.org/downloads/linux.html)
+ 
++- Eigen 版本 ≥ 3.3.4，[Eigen安装教程](http://eigen.tuxfamily.org/index.php?title=Main_Page)
+ 
+-## 2. Build
+-Clone the repository and catkin_make:
++### 1.3 livox_ros_driver
+ 
++按照[livox_ros_driver安装教程](https://github.com/Livox-SDK/livox_ros_driver)完成安装
++
++**注意**：
++
++- 因FAST-LIO需优先支持Livox系列激光雷达，运行任何FAST-LIO启动文件前，必须先安装并配置`livox_ros_driver`环境变量
++
++- 环境变量配置方法：在`~/.bashrc`文件末尾添加`source $Livox_ros_driver_dir$/devel/setup.bash`，其中`$Livox_ros_driver_dir$`为livox ros驱动工作空间目录（若完全按照官方文档安装，通常为`ws_livox`目录）
++
++## 2. 编译
++
++若需通过Docker容器运行FAST-LIO2，需先在设备上安装Docker，[Docker安装教程](https://docs.docker.com/engine/install/ubuntu/)
++
++### 2.1 Docker 容器部署
++
++在Linux系统中通过以下命令创建自定义名称的脚本文件：
++
++```Plain Text
++
++touch <自定义脚本名称>.sh
++```
++
++将以下代码写入`<自定义脚本名称>.sh`文件：
++
++```Plain Text
++
++#!/bin/bash
++mkdir docker_ws
++# 支持GUI的ROS Kinetic Docker运行脚本
++
++# 允许本地主机访问X服务器
++xhost +local:
++
++# 容器名称
++CONTAINER_NAME="fastlio2"
++
++# 启动Docker容器
++docker run -itd \
++  --name=$CONTAINER_NAME \
++  --user mars_ugv \
++  --network host \
++  --ipc=host \
++  -v /home/$USER/docker_ws:/home/mars_ugv/docker_ws \
++  --privileged \
++  --env="QT_X11_NO_MITSHM=1" \
++  --volume="/etc/localtime:/etc/localtime:ro" \
++  -v /dev/bus/usb:/dev/bus/usb \
++  --device=/dev/dri \
++  --group-add video \
++  -v /tmp/.X11-unix:/tmp/.X11-unix \
++  --env="DISPLAY=$DISPLAY" \
++  kenny0407/marslab_fastlio2:latest \
++  /bin/bash
+ ```
+-    cd ~/$A_ROS_DIR$/src
++
++执行以下命令为脚本添加执行权限：
++
++```Plain Text
++
++sudo chmod +x <自定义脚本名称>.sh
++```
++
++执行以下命令下载镜像并创建容器：
++
++```Plain Text
++
++./<自定义脚本名称>.sh
++```
++
++**脚本说明**：
++
++- 上述`docker run`命令会基于Docker Hub镜像创建带标签的容器，镜像下载时长取决于网络速度
++
++- 脚本会创建`docker_ws`工作空间，作为Docker容器与宿主机的共享文件夹；若需运行ROS包示例，需将ROS包文件下载至宿主机`docker_ws`目录，容器内同名文件夹会同步该文件，可直接在容器内播放
++
++- 本配置将宿主机网络共享给Docker容器，因此在宿主机或容器内执行`rostopic list`命令，输出结果完全一致
++
++### 2.2 源码编译
++
++克隆仓库并执行catkin_make编译：
++
++```Plain Text
++
++    cd ~/$ROS工作空间$/src
+     git clone https://github.com/hku-mars/FAST_LIO.git
+     cd FAST_LIO
+     git submodule update --init
+@@ -106,116 +182,158 @@ Clone the repository and catkin_make:
+     catkin_make
+     source devel/setup.bash
+ ```
+-- Remember to source the livox_ros_driver before build (follow 1.3 **livox_ros_driver**)
+-- If you want to use a custom build of PCL, add the following line to ~/.bashrc
+-```export PCL_ROOT={CUSTOM_PCL_PATH}```
+-## 3. Directly run
+-Noted:
+ 
+-A. Please make sure the IMU and LiDAR are **Synchronized**, that's important.
++- 编译前务必先配置`livox_ros_driver`环境变量（参考1.3节）
+ 
+-B. The warning message "Failed to find match for field 'time'." means the timestamps of each LiDAR points are missed in the rosbag file. That is important for the forward propagation and backwark propagation.
++- 若需使用自定义编译的PCL库，在`~/.bashrc`中添加以下语句：
+ 
+-C. We recommend to set the **extrinsic_est_en** to false if the extrinsic is give. As for the extrinsic initiallization, please refer to our recent work: [**Robust and Online LiDAR-inertial Initialization**](https://arxiv.org/abs/2202.11006).
++`export PCL_ROOT={自定义PCL库路径}`
+ 
+-### 3.1 For Avia
+-Connect to your PC to Livox Avia LiDAR by following  [Livox-ros-driver installation](https://github.com/Livox-SDK/livox_ros_driver), then
+-```
+-    cd ~/$FAST_LIO_ROS_DIR$
++## 3. 直接运行
++
++**重要提示**：
++
++A. 确保IMU与激光雷达完成**时间同步**，这是系统正常运行的关键
++
++B. 若出现警告"Failed to find match for field 'time'"，表示ROS包文件中缺失每个激光雷达点的时间戳，该时间戳对前向/后向传播至关重要
++
++C. 若已提供精确外参，建议将`extrinsic_est_en`设为false；外参初始化可参考最新工作：[**鲁棒实时激光雷达-IMU初始化**](https://github.com/hku-mars/LiDAR_IMU_Init)
++
++### 3.1 Livox Avia 雷达运行
++
++按照[Livox-ros-driver安装教程](https://github.com/Livox-SDK/livox_ros_driver)完成PC与Livox Avia雷达连接，随后执行：
++
++```Plain Text
++
++    cd ~/$FAST-LIO工作空间$
+     source devel/setup.bash
+     roslaunch fast_lio mapping_avia.launch
+     roslaunch livox_ros_driver livox_lidar_msg.launch
+ ```
+-- For livox serials, FAST-LIO only support the data collected by the ``` livox_lidar_msg.launch ``` since only its ``` livox_ros_driver/CustomMsg ``` data structure produces the timestamp of each LiDAR point which is very important for the motion undistortion. ``` livox_lidar.launch ``` can not produce it right now.
+-- If you want to change the frame rate, please modify the **publish_freq** parameter in the [livox_lidar_msg.launch](https://github.com/Livox-SDK/livox_ros_driver/blob/master/livox_ros_driver/launch/livox_lidar_msg.launch) of [Livox-ros-driver](https://github.com/Livox-SDK/livox_ros_driver) before make the livox_ros_driver pakage.
+ 
+-### 3.2 For Livox serials with external IMU
++- 对于Livox系列雷达，FAST-LIO仅支持`livox_lidar_msg.launch`采集的数据，因只有该启动文件对应的`livox_ros_driver/CustomMsg`数据结构会输出每个激光雷达点的时间戳（对点云运动去畸变至关重要）；`livox_lidar.launch`暂不支持该功能
+ 
+-mapping_avia.launch theratically supports mid-70, mid-40 or other livox serial LiDAR, but need to setup some parameters befor run:
++- 若需修改数据发布帧率，需先修改[Livox-ros-driver](https://github.com/Livox-SDK/livox_ros_driver)中[livox_lidar_msg.launch](https://github.com/Livox-SDK/livox_ros_driver/blob/master/livox_ros_driver/launch/livox_lidar_msg.launch)的`publish_freq`参数，再重新编译`livox_ros_driver`功能包
+ 
+-Edit ``` config/avia.yaml ``` to set the below parameters:
++### 3.2 外接IMU的Livox系列雷达运行
+ 
+-1. LiDAR point cloud topic name: ``` lid_topic ```
+-2. IMU topic name: ``` imu_topic ```
+-3. Translational extrinsic: ``` extrinsic_T ```
+-4. Rotational extrinsic: ``` extrinsic_R ``` (only support rotation matrix)
+-- The extrinsic parameters in FAST-LIO is defined as the LiDAR's pose (position and rotation matrix) in IMU body frame (i.e. the IMU is the base frame). They can be found in the official manual.
+-- FAST-LIO produces a very simple software time sync for livox LiDAR, set parameter ```time_sync_en``` to ture to turn on. But turn on **ONLY IF external time synchronization is really not possible**, since the software time sync cannot make sure accuracy.
++`mapping_avia.launch`理论上支持mid-70、mid-40等Livox系列雷达，运行前需修改以下参数：
+ 
+-### 3.3 For Velodyne or Ouster (Velodyne as an example)
++编辑`config/avia.yaml`文件，配置以下参数：
+ 
+-Step A: Setup before run
++1. 激光雷达点云话题名：`lid_topic`
+ 
+-Edit ``` config/velodyne.yaml ``` to set the below parameters:
++2. IMU话题名：`imu_topic`
+ 
+-1. LiDAR point cloud topic name: ``` lid_topic ```
+-2. IMU topic name: ``` imu_topic ``` (both internal and external, 6-aixes or 9-axies are fine)
+-3. Set the parameter ```timestamp_unit``` based on the unit of **time** (Velodyne) or **t** (Ouster) field in PoindCloud2 rostopic
+-4. Line number (we tested 16, 32 and 64 line, but not tested 128 or above): ``` scan_line ```
+-5. Translational extrinsic: ``` extrinsic_T ```
+-6. Rotational extrinsic: ``` extrinsic_R ``` (only support rotation matrix)
+-- The extrinsic parameters in FAST-LIO is defined as the LiDAR's pose (position and rotation matrix) in IMU body frame (i.e. the IMU is the base frame).
++3. 平移外参：`extrinsic_T`
+ 
+-Step B: Run below
+-```
+-    cd ~/$FAST_LIO_ROS_DIR$
++4. 旋转外参：`extrinsic_R`（仅支持旋转矩阵）
++
++**参数说明**：
++
++- FAST-LIO中外参定义为**激光雷达在IMU本体坐标系下的位姿**（IMU为基准坐标系），具体数值可查阅设备官方手册
++
++- FAST-LIO为Livox雷达提供简易软件时间同步功能，将`time_sync_en`设为true即可开启；但仅在无外部时间同步条件时建议开启，因软件同步无法保证精度
++
++### 3.3 Velodyne 或 Ouster 雷达运行（以Velodyne为例）
++
++#### 步骤A：运行前配置
++
++编辑`config/velodyne.yaml`文件，配置以下参数：
++
++1. 激光雷达点云话题名：`lid_topic`
++
++2. IMU话题名：`imu_topic`（支持内置/外接IMU，6轴/9轴均可）
++
++3. 根据PointCloud2话题中`time`（Velodyne）或`t`（Ouster）字段的单位，配置`timestamp_unit`参数
++
++4. 雷达线数（已测试16、32、64线，未测试128线及以上）：`scan_line`
++
++5. 平移外参：`extrinsic_T`
++
++6. 旋转外参：`extrinsic_R`（仅支持旋转矩阵）
++
++**参数说明**：FAST-LIO中外参定义为**激光雷达在IMU本体坐标系下的位姿**（IMU为基准坐标系）
++
++#### 步骤B：启动程序
++
++```Plain Text
++
++    cd ~/$FAST-LIO工作空间$
+     source devel/setup.bash
+     roslaunch fast_lio mapping_velodyne.launch
+ ```
+ 
+-Step C: Run LiDAR's ros driver or play rosbag.
++#### 步骤C：启动激光雷达ROS驱动或播放ROS包
+ 
+-### 3.4 PCD file save
++### 3.4 PCD 文件保存
+ 
+-Set ``` pcd_save_enable ``` in launchfile to ``` 1 ```. All the scans (in global frame) will be accumulated and saved to the file ``` FAST_LIO/PCD/scans.pcd ``` after the FAST-LIO is terminated. ```pcl_viewer scans.pcd``` can visualize the point clouds.
++将启动文件中的`pcd_save_enable`设为`1`，FAST-LIO终止后，所有全局坐标系下的扫描点云会累积保存至`FAST_LIO/PCD/scans.pcd`文件，通过`pcl_viewer scans.pcd`可可视化点云
+ 
+-*Tips for pcl_viewer:*
+-- change what to visualize/color by pressing keyboard 1,2,3,4,5 when pcl_viewer is running. 
+-```
+-    1 is all random
+-    2 is X values
+-    3 is Y values
+-    4 is Z values
+-    5 is intensity
++**pcl_viewer操作技巧**：运行pcl_viewer时，按键盘1-5键可切换可视化/着色模式：
++
++```Plain Text
++
++    1：随机着色
++    2：X轴数值着色
++    3：Y轴数值着色
++    4：Z轴数值着色
++    5：强度值着色
+ ```
+ 
+-## 4. Rosbag Example
+-### 4.1 Livox Avia Rosbag
++## 4. ROS包示例
++
++### 4.1 Livox Avia ROS包
++
+ <div align="left">
++
+ <img src="doc/results/HKU_LG_Indoor.png" width=47% />
++
+ <img src="doc/results/HKU_MB_002.png" width = 51% >
+ 
+-Files: Can be downloaded from [google drive](https://drive.google.com/drive/folders/1YL5MQVYgAM8oAWUm7e3OGXZBPKkanmY1?usp=sharing)
++</div>
+ 
+-Run:
+-```
+-roslaunch fast_lio mapping_avia.launch
+-rosbag play YOUR_DOWNLOADED.bag
++**文件下载**：[谷歌云盘](https://drive.google.com/drive/folders/1CGYEJ9-wWjr8INyan6q1BZz_5VtGB-fP?usp=sharing)
+ 
++**运行命令**：
++
++```Plain Text
++
++roslaunch fast_lio mapping_avia.launch
++rosbag play 下载的ROS包文件.bag
+ ```
+ 
+-### 4.2 Velodyne HDL-32E Rosbag
++### 4.2 Velodyne HDL-32E ROS包
+ 
+-**NCLT Dataset**: Original bin file can be found [here](http://robots.engin.umich.edu/nclt/).
++**NCLT数据集**：原始bin文件可从[此处](http://robots.engin.umich.edu/nclt/)下载
++
++我们提供[ROS包文件](https://drive.google.com/drive/folders/1blQJuAB4S80NwZmpM6oALyHWvBljPSOE?usp=sharing)及[Python脚本](https://drive.google.com/file/d/1QC9IRBv2_-cgo_AEvL62E1ml1IL9ht6J/view?usp=sharing)，可通过以下命令生成ROS包：
++
++`python3 sensordata_to_rosbag_fastlio.py bin文件目录 生成包名称.bag`
++
++**运行命令**：
++
++```Plain Text
+ 
+-We produce [Rosbag Files](https://drive.google.com/drive/folders/1VBK5idI1oyW0GC_I_Hxh63aqam3nocNK?usp=sharing) and [a python script](https://drive.google.com/file/d/1leh7DxbHx29DyS1NJkvEfeNJoccxH7XM/view) to generate Rosbag files: ```python3 sensordata_to_rosbag_fastlio.py bin_file_dir bag_name.bag```
+-    
+-Run:
+-```
+ roslaunch fast_lio mapping_velodyne.launch
+-rosbag play YOUR_DOWNLOADED.bag
++rosbag play 下载的ROS包文件.bag
+ ```
+ 
+-## 5.Implementation on UAV
+-In order to validate the robustness and computational efficiency of FAST-LIO in actual mobile robots, we build a small-scale quadrotor which can carry a Livox Avia LiDAR with 70 degree FoV and a DJI Manifold 2-C onboard computer with a 1.8 GHz Intel i7-8550U CPU and 8 G RAM, as shown in below.
++## 5. 无人机部署验证
++
++为验证FAST-LIO在实际移动机器人中的鲁棒性与计算效率，我们搭建了小型四旋翼无人机平台：搭载70°视场角Livox Avia激光雷达，以及载板为1.8GHz Intel i7-8550U CPU、8G内存的大疆妙算2-C，如下图所示。
+ 
+-The main structure of this UAV is 3d printed (Aluminum or PLA), the .stl file will be open-sourced in the future.
++无人机主体结构采用3D打印（铝合金或PLA材料），.stl模型文件后续将开源。
+ 
+ <div align="center">
+-    <img src="doc/uav01.jpg" width=40.5% >
+-    <img src="doc/uav_system.png" width=57% >
++
++<img src="doc/uav01.jpg" width=40.5% >
++
++<img src="doc/uav_system.png" width=57% >
++
+ </div>
+ 
+-## 6.Acknowledgments
++## 6. 致谢
+ 
+-Thanks for LOAM(J. Zhang and S. Singh. LOAM: Lidar Odometry and Mapping in Real-time), [Livox_Mapping](https://github.com/Livox-SDK/livox_mapping), [LINS](https://github.com/ChaoqinRobotics/LINS---LiDAR-inertial-SLAM) and [Loam_Livox](https://github.com/hku-mars/loam_livox).
++感谢LOAM（J. Zhang and S. Singh. LOAM: Lidar Odometry and Mapping in Real-time）、[Livox_Mapping](https://github.com/Livox-SDK/livox_mapping)、[LINS](https://github.com/ChaoqinRobotics/LINS---LiDAR-inertial-SLAM)及[Loam_Livox](https://github.com/hku-mars/loam_livox)相关工作的贡献。
++> （注：文档部分内容可能由 AI 生成）
+diff --git a/config/avia.yaml b/config/avia.yaml
+index 84d4bdf..adcc03b 100644
+--- a/config/avia.yaml
++++ b/config/avia.yaml
+@@ -24,7 +24,7 @@ mapping:
+                    0, 0, 1]
+ 
+ publish:
+-    path_en: true
++    path_en:  false
+     scan_publish_en:  true       # false: close all the point cloud output
+     dense_publish_en: true       # false: low down the points number in a global-frame point clouds scan.
+     scan_bodyframe_pub_en: true  # true: output the point cloud scans in IMU-body-frame
+diff --git a/config/mid360.yaml b/config/mid360.yaml
+new file mode 100644
+index 0000000..9525562
+--- /dev/null
++++ b/config/mid360.yaml
+@@ -0,0 +1,35 @@
++common:
++    lid_topic:  "/livox/lidar"
++    imu_topic:  "/livox/imu"
++    time_sync_en: false         # ONLY turn on when external time synchronization is really not possible
++    time_offset_lidar_to_imu: 0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
++                                  # This param will take effect no matter what time_sync_en is. So if the time offset is not known exactly, please set as 0.0
++
++preprocess:
++    lidar_type: 1                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 
++    scan_line: 4
++    blind: 1
++
++mapping:
++    acc_cov: 0.1
++    gyr_cov: 0.1
++    b_acc_cov: 0.0001
++    b_gyr_cov: 0.0001
++    fov_degree:    360
++    det_range:     100.0
++    extrinsic_est_en:  false      # true: enable the online estimation of IMU-LiDAR extrinsic
++    extrinsic_T: [ -0.011, -0.02329, 0.04412 ]
++    extrinsic_R: [ 1, 0, 0,
++                   0, 1, 0,
++                   0, 0, 1]
++
++publish:
++    path_en:  true
++    scan_publish_en:  true       # false: close all the point cloud output
++    dense_publish_en: true       # false: low down the points number in a global-frame point clouds scan.
++    scan_bodyframe_pub_en: true  # true: output the point cloud scans in IMU-body-frame
++
++pcd_save:
++    pcd_save_en: true
++    interval: -1                 # how many LiDAR frames saved in each pcd file; 
++                                 # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
+diff --git a/config/velodyne.yaml b/config/velodyne.yaml
+index bb565fc..453777b 100644
+--- a/config/velodyne.yaml
++++ b/config/velodyne.yaml
+@@ -1,9 +1,10 @@
+ common:
+-    lid_topic:  "/points_raw"
+-    imu_topic:  "/imu_raw"
++    lid_topic:  "/velodyne_points"
++    imu_topic:  "/imu/data"
+     time_sync_en: false         # ONLY turn on when external time synchronization is really not possible
+-    time_offset_lidar_to_imu: 0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
++    time_offset_lidar_to_imu: 0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
+                                   # This param will take effect no matter what time_sync_en is. So if the time offset is not known exactly, please set as 0.0
++
+ preprocess:
+     lidar_type: 2                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 
+     scan_line: 32
+@@ -12,25 +13,25 @@ preprocess:
+     blind: 2
+ 
+ mapping:
+-    acc_cov: 0.01
+-    gyr_cov: 0.01
++    acc_cov: 0.1
++    gyr_cov: 0.1
+     b_acc_cov: 0.0001
+     b_gyr_cov: 0.0001
+     fov_degree:    180
+     det_range:     100.0
+     extrinsic_est_en:  false      # true: enable the online estimation of IMU-LiDAR extrinsic,
+-    extrinsic_T: [ -0.112, -0.176, 0.247 ]
++    extrinsic_T: [ 0, 0, 0.28]
+     extrinsic_R: [ 1, 0, 0, 
+                    0, 1, 0, 
+                    0, 0, 1]
+ 
+ publish:
+-    path_en: true
++    path_en:  false
+     scan_publish_en:  true       # false: close all the point cloud output
+     dense_publish_en: true       # false: low down the points number in a global-frame point clouds scan.
+-    scan_bodyframe_pub_en: false # true: output the point cloud scans in IMU-body-frame
++    scan_bodyframe_pub_en: true  # true: output the point cloud scans in IMU-body-frame
+ 
+ pcd_save:
+-    pcd_save_en: true 
++    pcd_save_en: true
+     interval: -1                 # how many LiDAR frames saved in each pcd file; 
+                                  # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
+diff --git a/config/velodyne_noted.yaml b/config/velodyne_noted.yaml
+deleted file mode 100644
+index 09673aa..0000000
+--- a/config/velodyne_noted.yaml
++++ /dev/null
+@@ -1,40 +0,0 @@
+-common:
+-    lid_topic:  "/velodyne_points"	# 激光雷达数据的ros topic
+-    imu_topic:  "/imu/data"	# imu数据的ros topic
+-    time_sync_en: false         # ONLY turn on when external time synchronization is really not possible （
+-    time_offset_lidar_to_imu: 0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
+-                                  # This param will take effect no matter what time_sync_en is. So if the time offset is not known exactly, please set as 0.0
+-                                  # 激光雷达与imu数据的时间差，如果不知道设为多少，就设成0。
+-
+-preprocess:
+-    lidar_type: 2                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR,  # 雷达类型，“2”指velodyne雷达
+-    scan_line: 32	# 雷达线数（16,32,128等）
+-    scan_rate: 10                # only need to be set for velodyne, unit: Hz,  # 扫描频率，需要与velodyne雷达扫描频率相匹配
+-    timestamp_unit: 2            # the unit of time/t field in the PointCloud2 rostopic: 0-second, 1-milisecond, 2-microsecond, 3-nanosecond. # 根据PoindCloud2 rostopic中的time（Velodyne）或t（Ouster）字段设置时间单位
+-    blind: 2	# 最小距离阈值，即过滤掉0～blind范围内的点云
+-
+-mapping: # 建图相关设置
+-    acc_cov: 0.1	  # 加速度协方差
+-    gyr_cov: 0.1	  # 陀螺仪协防差
+-    b_acc_cov: 0.0001	  # 加速度零偏协防差
+-    b_gyr_cov: 0.0001	  # 陀螺仪零偏协防差
+-    fov_degree:    180	  # 激光雷达视场角
+-    det_range:     100.0  # 激光雷达的最大探测范围
+-    extrinsic_est_en:  false      # true: enable the online estimation of IMU-LiDAR extrinsic, # 是否开启在线外参估计
+-    extrinsic_T: [ 0, 0, 0.1]	  # 雷达相对于IMU的外参T（即雷达在IMU坐标系中的坐标）
+-    extrinsic_R: [ 1, 0, 0, 	  # 雷达相对于IMU的外参R
+-                   0, 1, 0, 
+-                   0, 0, 1]
+-
+-publish: # ROS 话题发布相关设置
+-    path_en: true 		 # 是否发布“Path”话题
+-    scan_publish_en:  true       # false: close all the point cloud output  # 如果选否：关闭所有点云输出
+-    dense_publish_en: true       # false: low down the points number in a global-frame point clouds scan.  # 如果选否：降低点云中点的数量
+-    scan_bodyframe_pub_en: true  # true: output the point cloud scans in IMU-body-frame  # 如果选是：输出 IMU-body-frame 中的点云扫描
+-
+-pcd_save: # 点云存储设置
+-    pcd_save_en: true	# 是否存储最终的点云地图
+-    interval: -1                 # how many LiDAR frames saved in each pcd file; 
+-                                 # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
+-                                 # 每个pcd文件中存储的雷达帧的数量
+-                                 # “-1”指所有的帧都被存储在一个pcd文件中，当雷达帧过多时可能导致内存崩溃。
+diff --git a/include/IKFoM_toolkit/esekfom/esekfom.hpp b/include/IKFoM_toolkit/esekfom/esekfom.hpp
+index 827f440..7547584 100644
+--- a/include/IKFoM_toolkit/esekfom/esekfom.hpp
++++ b/include/IKFoM_toolkit/esekfom/esekfom.hpp
+@@ -111,7 +111,7 @@ class esekf{
+ 	};
+ 
+ public:
+-
++	
+ 	typedef typename state::scalar scalar_type;
+ 	typedef Matrix<scalar_type, n, n> cov;
+ 	typedef Matrix<scalar_type, m, n> cov_;
+@@ -1655,10 +1655,10 @@ public:
+ 			
+ 			
+ 			P_ = P_propagated;
+-
++			
+ 			Matrix<scalar_type, 3, 3> res_temp_SO3;
+ 			MTK::vect<3, scalar_type> seg_SO3;
+-			for (std::vector<std::pair<int, int> >::iterator it = x_.SO3_state.begin(); it != x_.SO3_state.end(); it++) { // 姿态和外参姿态
++			for (std::vector<std::pair<int, int> >::iterator it = x_.SO3_state.begin(); it != x_.SO3_state.end(); it++) {
+ 				int idx = (*it).first;
+ 				int dim = (*it).second;
+ 				for(int i = 0; i < 3; i++){
+@@ -1677,7 +1677,7 @@ public:
+ 
+ 			Matrix<scalar_type, 2, 2> res_temp_S2;
+ 			MTK::vect<2, scalar_type> seg_S2;
+-			for (std::vector<std::pair<int, int> >::iterator it = x_.S2_state.begin(); it != x_.S2_state.end(); it++) { // 重力项
++			for (std::vector<std::pair<int, int> >::iterator it = x_.S2_state.begin(); it != x_.S2_state.end(); it++) {
+ 				int idx = (*it).first;
+ 				int dim = (*it).second;
+ 				for(int i = 0; i < 2; i++){
+diff --git a/include/Pose6D.h b/include/Pose6D.h
+deleted file mode 100644
+index 27e24a4..0000000
+--- a/include/Pose6D.h
++++ /dev/null
+@@ -1,284 +0,0 @@
+-// Generated by gencpp from file fast_lio/Pose6D.msg
+-// DO NOT EDIT!
+-
+-
+-#ifndef FAST_LIO_MESSAGE_POSE6D_H
+-#define FAST_LIO_MESSAGE_POSE6D_H
+-
+-
+-#include <string>
+-#include <vector>
+-#include <map>
+-
+-#include <ros/types.h>
+-#include <ros/serialization.h>
+-#include <ros/builtin_message_traits.h>
+-#include <ros/message_operations.h>
+-
+-
+-namespace fast_lio
+-{
+-template <class ContainerAllocator>
+-struct Pose6D_
+-{
+-  typedef Pose6D_<ContainerAllocator> Type;
+-
+-  Pose6D_()
+-    : offset_time(0.0)
+-    , acc()
+-    , gyr()
+-    , vel()
+-    , pos()
+-    , rot()  {
+-      acc.assign(0.0);
+-
+-      gyr.assign(0.0);
+-
+-      vel.assign(0.0);
+-
+-      pos.assign(0.0);
+-
+-      rot.assign(0.0);
+-  }
+-  Pose6D_(const ContainerAllocator& _alloc)
+-    : offset_time(0.0)
+-    , acc()
+-    , gyr()
+-    , vel()
+-    , pos()
+-    , rot()  {
+-  (void)_alloc;
+-      acc.assign(0.0);
+-
+-      gyr.assign(0.0);
+-
+-      vel.assign(0.0);
+-
+-      pos.assign(0.0);
+-
+-      rot.assign(0.0);
+-  }
+-
+-
+-
+-   typedef double _offset_time_type;
+-  _offset_time_type offset_time;
+-
+-   typedef boost::array<double, 3>  _acc_type;
+-  _acc_type acc;
+-
+-   typedef boost::array<double, 3>  _gyr_type;
+-  _gyr_type gyr;
+-
+-   typedef boost::array<double, 3>  _vel_type;
+-  _vel_type vel;
+-
+-   typedef boost::array<double, 3>  _pos_type;
+-  _pos_type pos;
+-
+-   typedef boost::array<double, 9>  _rot_type;
+-  _rot_type rot;
+-
+-
+-
+-
+-
+-  typedef boost::shared_ptr< ::fast_lio::Pose6D_<ContainerAllocator> > Ptr;
+-  typedef boost::shared_ptr< ::fast_lio::Pose6D_<ContainerAllocator> const> ConstPtr;
+-
+-}; // struct Pose6D_
+-
+-typedef ::fast_lio::Pose6D_<std::allocator<void> > Pose6D;
+-
+-typedef boost::shared_ptr< ::fast_lio::Pose6D > Pose6DPtr;
+-typedef boost::shared_ptr< ::fast_lio::Pose6D const> Pose6DConstPtr;
+-
+-// constants requiring out of line definition
+-
+-
+-
+-template<typename ContainerAllocator>
+-std::ostream& operator<<(std::ostream& s, const ::fast_lio::Pose6D_<ContainerAllocator> & v)
+-{
+-ros::message_operations::Printer< ::fast_lio::Pose6D_<ContainerAllocator> >::stream(s, "", v);
+-return s;
+-}
+-
+-
+-template<typename ContainerAllocator1, typename ContainerAllocator2>
+-bool operator==(const ::fast_lio::Pose6D_<ContainerAllocator1> & lhs, const ::fast_lio::Pose6D_<ContainerAllocator2> & rhs)
+-{
+-  return lhs.offset_time == rhs.offset_time &&
+-    lhs.acc == rhs.acc &&
+-    lhs.gyr == rhs.gyr &&
+-    lhs.vel == rhs.vel &&
+-    lhs.pos == rhs.pos &&
+-    lhs.rot == rhs.rot;
+-}
+-
+-template<typename ContainerAllocator1, typename ContainerAllocator2>
+-bool operator!=(const ::fast_lio::Pose6D_<ContainerAllocator1> & lhs, const ::fast_lio::Pose6D_<ContainerAllocator2> & rhs)
+-{
+-  return !(lhs == rhs);
+-}
+-
+-
+-} // namespace fast_lio
+-
+-namespace ros
+-{
+-namespace message_traits
+-{
+-
+-
+-
+-
+-
+-template <class ContainerAllocator>
+-struct IsFixedSize< ::fast_lio::Pose6D_<ContainerAllocator> >
+-  : TrueType
+-  { };
+-
+-template <class ContainerAllocator>
+-struct IsFixedSize< ::fast_lio::Pose6D_<ContainerAllocator> const>
+-  : TrueType
+-  { };
+-
+-template <class ContainerAllocator>
+-struct IsMessage< ::fast_lio::Pose6D_<ContainerAllocator> >
+-  : TrueType
+-  { };
+-
+-template <class ContainerAllocator>
+-struct IsMessage< ::fast_lio::Pose6D_<ContainerAllocator> const>
+-  : TrueType
+-  { };
+-
+-template <class ContainerAllocator>
+-struct HasHeader< ::fast_lio::Pose6D_<ContainerAllocator> >
+-  : FalseType
+-  { };
+-
+-template <class ContainerAllocator>
+-struct HasHeader< ::fast_lio::Pose6D_<ContainerAllocator> const>
+-  : FalseType
+-  { };
+-
+-
+-template<class ContainerAllocator>
+-struct MD5Sum< ::fast_lio::Pose6D_<ContainerAllocator> >
+-{
+-  static const char* value()
+-  {
+-    return "ab486e9c24704038320abf9ff59003d2";
+-  }
+-
+-  static const char* value(const ::fast_lio::Pose6D_<ContainerAllocator>&) { return value(); }
+-  static const uint64_t static_value1 = 0xab486e9c24704038ULL;
+-  static const uint64_t static_value2 = 0x320abf9ff59003d2ULL;
+-};
+-
+-template<class ContainerAllocator>
+-struct DataType< ::fast_lio::Pose6D_<ContainerAllocator> >
+-{
+-  static const char* value()
+-  {
+-    return "fast_lio/Pose6D";
+-  }
+-
+-  static const char* value(const ::fast_lio::Pose6D_<ContainerAllocator>&) { return value(); }
+-};
+-
+-template<class ContainerAllocator>
+-struct Definition< ::fast_lio::Pose6D_<ContainerAllocator> >
+-{
+-  static const char* value()
+-  {
+-    return "# the preintegrated Lidar states at the time of IMU measurements in a frame\n"
+-"float64  offset_time # the offset time of IMU measurement w.r.t the first lidar point\n"
+-"float64[3] acc       # the preintegrated total acceleration (global frame) at the Lidar origin\n"
+-"float64[3] gyr       # the unbiased angular velocity (body frame) at the Lidar origin\n"
+-"float64[3] vel       # the preintegrated velocity (global frame) at the Lidar origin\n"
+-"float64[3] pos       # the preintegrated position (global frame) at the Lidar origin\n"
+-"float64[9] rot       # the preintegrated rotation (global frame) at the Lidar origin\n"
+-;
+-  }
+-
+-  static const char* value(const ::fast_lio::Pose6D_<ContainerAllocator>&) { return value(); }
+-};
+-
+-} // namespace message_traits
+-} // namespace ros
+-
+-namespace ros
+-{
+-namespace serialization
+-{
+-
+-  template<class ContainerAllocator> struct Serializer< ::fast_lio::Pose6D_<ContainerAllocator> >
+-  {
+-    template<typename Stream, typename T> inline static void allInOne(Stream& stream, T m)
+-    {
+-      stream.next(m.offset_time);
+-      stream.next(m.acc);
+-      stream.next(m.gyr);
+-      stream.next(m.vel);
+-      stream.next(m.pos);
+-      stream.next(m.rot);
+-    }
+-
+-    ROS_DECLARE_ALLINONE_SERIALIZER
+-  }; // struct Pose6D_
+-
+-} // namespace serialization
+-} // namespace ros
+-
+-namespace ros
+-{
+-namespace message_operations
+-{
+-
+-template<class ContainerAllocator>
+-struct Printer< ::fast_lio::Pose6D_<ContainerAllocator> >
+-{
+-  template<typename Stream> static void stream(Stream& s, const std::string& indent, const ::fast_lio::Pose6D_<ContainerAllocator>& v)
+-  {
+-    s << indent << "offset_time: ";
+-    Printer<double>::stream(s, indent + "  ", v.offset_time);
+-    s << indent << "acc[]" << std::endl;
+-    for (size_t i = 0; i < v.acc.size(); ++i)
+-    {
+-      s << indent << "  acc[" << i << "]: ";
+-      Printer<double>::stream(s, indent + "  ", v.acc[i]);
+-    }
+-    s << indent << "gyr[]" << std::endl;
+-    for (size_t i = 0; i < v.gyr.size(); ++i)
+-    {
+-      s << indent << "  gyr[" << i << "]: ";
+-      Printer<double>::stream(s, indent + "  ", v.gyr[i]);
+-    }
+-    s << indent << "vel[]" << std::endl;
+-    for (size_t i = 0; i < v.vel.size(); ++i)
+-    {
+-      s << indent << "  vel[" << i << "]: ";
+-      Printer<double>::stream(s, indent + "  ", v.vel[i]);
+-    }
+-    s << indent << "pos[]" << std::endl;
+-    for (size_t i = 0; i < v.pos.size(); ++i)
+-    {
+-      s << indent << "  pos[" << i << "]: ";
+-      Printer<double>::stream(s, indent + "  ", v.pos[i]);
+-    }
+-    s << indent << "rot[]" << std::endl;
+-    for (size_t i = 0; i < v.rot.size(); ++i)
+-    {
+-      s << indent << "  rot[" << i << "]: ";
+-      Printer<double>::stream(s, indent + "  ", v.rot[i]);
+-    }
+-  }
+-};
+-
+-} // namespace message_operations
+-} // namespace ros
+-
+-#endif // FAST_LIO_MESSAGE_POSE6D_H
+diff --git a/include/common_lib.h b/include/common_lib.h
+index c993c5e..82a57cb 100644
+--- a/include/common_lib.h
++++ b/include/common_lib.h
+@@ -5,14 +5,11 @@
+ #include <Eigen/Eigen>
+ #include <pcl/point_types.h>
+ #include <pcl/point_cloud.h>
+-#include <fastlio_high_freq/Pose6D.h>
++#include <fast_lio/Pose6D.h>
+ #include <sensor_msgs/Imu.h>
+ #include <nav_msgs/Odometry.h>
+ #include <tf/transform_broadcaster.h>
+ #include <eigen_conversions/eigen_msg.h>
+-#include <geometry_msgs/WrenchStamped.h>
+-#include <sensor_msgs/JointState.h>
+-#include "use-ikfom.hpp"
+ 
+ using namespace std;
+ using namespace Eigen;
+@@ -36,7 +33,7 @@ using namespace Eigen;
+ #define STD_VEC_FROM_EIGEN(mat)  vector<decltype(mat)::Scalar> (mat.data(), mat.data() + mat.rows() * mat.cols())
+ #define DEBUG_FILE_DIR(name)     (string(string(ROOT_DIR) + "Log/"+ name))
+ 
+-typedef fastlio_high_freq::Pose6D Pose6D;
++typedef fast_lio::Pose6D Pose6D;
+ typedef pcl::PointXYZINormal PointType;
+ typedef pcl::PointCloud<PointType> PointCloudXYZI;
+ typedef vector<PointType, Eigen::aligned_allocator<PointType>>  PointVector;
+@@ -66,19 +63,6 @@ struct MeasureGroup     // Lidar data and imu dates for the curent process
+     double lidar_end_time;
+     PointCloudXYZI::Ptr lidar;
+     deque<sensor_msgs::Imu::ConstPtr> imu;
+-    deque<sensor_msgs::JointState::ConstPtr> joint_encoder;
+-    deque<geometry_msgs::WrenchStamped::ConstPtr> l_f_force;
+-    deque<geometry_msgs::WrenchStamped::ConstPtr> r_f_force;
+-};
+-
+-struct Pose6DTemp
+-{
+-    V3D acc_s_last_temp;
+-    V3D angvel_last_temp;
+-    V3D imu_vel_temp;
+-    V3D imu_pos_temp;
+-    M3D imu_rot_temp;
+-    double imu_time_temp;
+ };
+ 
+ struct StatesGroup
+@@ -238,7 +222,7 @@ float calc_dist(PointType p1, PointType p2){
+     return d;
+ }
+ 
+-template<typename T> // 模板函数，编译器执行到这里时才会实例化，编译器会根据传入的参数类型自动生成对应的函数。
++template<typename T>
+ bool esti_plane(Matrix<T, 4, 1> &pca_result, const PointVector &point, const T &threshold)
+ {
+     Matrix<T, NUM_MATCH_POINTS, 3> A;
+diff --git a/include/use-ikfom.hpp b/include/use-ikfom.hpp
+index 5674990..fdd8f87 100644
+--- a/include/use-ikfom.hpp
++++ b/include/use-ikfom.hpp
+@@ -44,17 +44,16 @@ MTK::get_cov<process_noise_ikfom>::type process_noise_cov()
+ 
+ //double L_offset_to_I[3] = {0.04165, 0.02326, -0.0284}; // Avia 
+ //vect3 Lidar_offset_to_IMU(L_offset_to_I, 3);
+-// 
+ Eigen::Matrix<double, 24, 1> get_f(state_ikfom &s, const input_ikfom &in)
+ {
+-	Eigen::Matrix<double, 24, 1> res = Eigen::Matrix<double, 24, 1>::Zero();  // 初始化
++	Eigen::Matrix<double, 24, 1> res = Eigen::Matrix<double, 24, 1>::Zero();
+ 	vect3 omega;
+-	in.gyro.boxminus(omega, s.bg); // 角速度
+-	vect3 a_inertial = s.rot * (in.acc-s.ba); // 加速度
++	in.gyro.boxminus(omega, s.bg);
++	vect3 a_inertial = s.rot * (in.acc-s.ba); 
+ 	for(int i = 0; i < 3; i++ ){
+ 		res(i) = s.vel[i];
+ 		res(i + 3) =  omega[i]; 
+-		res(i + 12) = a_inertial[i] + s.grav[i]; // 赋值
++		res(i + 12) = a_inertial[i] + s.grav[i]; 
+ 	}
+ 	return res;
+ }
+diff --git a/launch/mapping_avia.launch b/launch/mapping_avia.launch
+index 858ff3e..9c5ea00 100644
+--- a/launch/mapping_avia.launch
++++ b/launch/mapping_avia.launch
+@@ -12,7 +12,7 @@
+ 	<param name="filter_size_map" type="double" value="0.5" />
+ 	<param name="cube_side_length" type="double" value="1000" />
+ 	<param name="runtime_pos_log_enable" type="bool" value="0" />
+-    <node pkg="fastlio_high_freq" type="fastlio_high_freq_se" name="laserMapping" output="screen" /> 
++    <node pkg="fast_lio" type="fastlio_mapping" name="laserMapping" output="screen" /> 
+ 
+ 	<group if="$(arg rviz)">
+ 	<node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find fast_lio)/rviz_cfg/loam_livox.rviz" />
+diff --git a/launch/mapping_horizon.launch b/launch/mapping_horizon.launch
+index 4349f3e..17b6d63 100644
+--- a/launch/mapping_horizon.launch
++++ b/launch/mapping_horizon.launch
+@@ -12,7 +12,7 @@
+ 	<param name="filter_size_map" type="double" value="0.5" />
+ 	<param name="cube_side_length" type="double" value="1000" />
+ 	<param name="runtime_pos_log_enable" type="bool" value="0" />
+-    <node pkg="fastlio_high_freq" type="fastlio_high_freq_se" name="laserMapping" output="screen" /> 
++    <node pkg="fast_lio" type="fastlio_mapping" name="laserMapping" output="screen" /> 
+ 
+ 	<group if="$(arg rviz)">
+ 	<node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find fast_lio)/rviz_cfg/loam_livox.rviz" />
+diff --git a/launch/mapping_mid360.launch b/launch/mapping_mid360.launch
+new file mode 100644
+index 0000000..0fe04fd
+--- /dev/null
++++ b/launch/mapping_mid360.launch
+@@ -0,0 +1,21 @@
++<launch>
++<!-- Launch file for Livox MID360 LiDAR -->
++
++	<arg name="rviz" default="true" />
++
++	<rosparam command="load" file="$(find fast_lio)/config/mid360.yaml" />
++
++	<param name="feature_extract_enable" type="bool" value="0"/>
++	<param name="point_filter_num" type="int" value="3"/>
++	<param name="max_iteration" type="int" value="3" />
++	<param name="filter_size_surf" type="double" value="0.5" />
++	<param name="filter_size_map" type="double" value="0.5" />
++	<param name="cube_side_length" type="double" value="1000" />
++	<param name="runtime_pos_log_enable" type="bool" value="0" />
++    <node pkg="fast_lio" type="fastlio_mapping" name="laserMapping" output="screen" /> 
++
++	<group if="$(arg rviz)">
++	<node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find fast_lio)/rviz_cfg/loam_livox.rviz" />
++	</group>
++
++</launch>
+diff --git a/launch/mapping_ouster64.launch b/launch/mapping_ouster64.launch
+index 5c5f8af..1f5a2a5 100644
+--- a/launch/mapping_ouster64.launch
++++ b/launch/mapping_ouster64.launch
+@@ -12,10 +12,10 @@
+     <param name="filter_size_map" type="double" value="0.5" />
+     <param name="cube_side_length" type="double" value="1000" />
+     <param name="runtime_pos_log_enable" type="bool" value="0" />
+-    <node pkg="fastlio_high_freq" type="fastlio_high_freq_se" name="laserMapping" output="screen" /> 
++    <node pkg="fast_lio" type="fastlio_mapping" name="laserMapping" output="screen" /> 
+ 
+     <group if="$(arg rviz)">
+-    <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find fastlio_high_freq)/rviz_cfg/loam_livox.rviz" />
++    <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find fast_lio)/rviz_cfg/loam_livox.rviz" />
+     </group>
+ 
+ </launch>
+diff --git a/launch/mapping_velodyne.launch b/launch/mapping_velodyne.launch
+index d0d799b..25d449c 100644
+--- a/launch/mapping_velodyne.launch
++++ b/launch/mapping_velodyne.launch
+@@ -3,22 +3,19 @@
+ 
+     <arg name="rviz" default="true" />
+ 
+-    <rosparam command="load" file="$(find fastlio_high_freq)/config/velodyne.yaml" />
++    <rosparam command="load" file="$(find fast_lio)/config/velodyne.yaml" />
+ 
+-    <param name="feature_extract_enable" type="bool" value="1"/>
++    <param name="feature_extract_enable" type="bool" value="0"/>
+     <param name="point_filter_num" type="int" value="4"/>
+     <param name="max_iteration" type="int" value="3" />
+     <param name="filter_size_surf" type="double" value="0.5" />
+     <param name="filter_size_map" type="double" value="0.5" />
+     <param name="cube_side_length" type="double" value="1000" />
+     <param name="runtime_pos_log_enable" type="bool" value="0" />
+-    <node pkg="fastlio_high_freq" type="fastlio_high_freq_se" name="laserMapping" output="screen" /> 
+-
+-    <!-- <param name="/use_sim_time" value="true" /> -->
++    <node pkg="fast_lio" type="fastlio_mapping" name="laserMapping" output="screen" /> 
+ 
+     <group if="$(arg rviz)">
+-    <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find fastlio_high_freq)/rviz_cfg/loam_livox.rviz" />
+-	<node pkg="tf" type="static_transform_publisher" name="imu_to_vicon" args="0.1 0.0 0.2 0 0 0 tf_imu2vicon vicon 1" />
++    <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find fast_lio)/rviz_cfg/loam_livox.rviz" />
+     </group>
+ 
+ </launch>
+\ No newline at end of file
+diff --git a/package.xml b/package.xml
+index 1128b6c..1e8c4d1 100644
+--- a/package.xml
++++ b/package.xml
+@@ -1,6 +1,6 @@
+ <?xml version="1.0"?>
+ <package>
+-  <name>fastlio_high_freq</name>
++  <name>fast_lio</name>
+   <version>0.0.0</version>
+ 
+   <description>
+@@ -25,7 +25,7 @@
+   <build_depend>sensor_msgs</build_depend>
+   <build_depend>tf</build_depend>
+   <build_depend>pcl_ros</build_depend>
+-  <build_depend>livox_ros_driver</build_depend>
++  <build_depend>livox_ros_driver2</build_depend>
+   <build_depend>message_generation</build_depend>
+ 
+   <run_depend>geometry_msgs</run_depend>
+@@ -36,7 +36,7 @@
+   <run_depend>std_msgs</run_depend>
+   <run_depend>tf</run_depend>
+   <run_depend>pcl_ros</run_depend>
+-  <run_depend>livox_ros_driver</run_depend>
++  <run_depend>livox_ros_driver2</run_depend>
+   <run_depend>message_runtime</run_depend>
+ 
+   <test_depend>rostest</test_depend>
+diff --git a/rviz_cfg/loam_livox.rviz b/rviz_cfg/loam_livox.rviz
+index ea3cdf3..51c7bcc 100644
+--- a/rviz_cfg/loam_livox.rviz
++++ b/rviz_cfg/loam_livox.rviz
+@@ -15,8 +15,11 @@ Panels:
+         - /Odometry1/Odometry1/Covariance1/Position1
+         - /Odometry1/Odometry1/Covariance1/Orientation1
+         - /MarkerArray1/Namespaces1
++        - /Map1
++        - /TF1
++        - /LaserScan1
+       Splitter Ratio: 0.6432291865348816
+-    Tree Height: 811
++    Tree Height: 513
+   - Class: rviz/Selection
+     Name: Selection
+   - Class: rviz/Tool Properties
+@@ -32,7 +35,6 @@ Panels:
+     Name: Views
+     Splitter Ratio: 0.5
+   - Class: rviz/Time
+-    Experimental: false
+     Name: Time
+     SyncMode: 0
+     SyncSource: surround
+@@ -61,12 +63,14 @@ Visualization Manager:
+       Plane Cell Count: 40
+       Reference Frame: <Fixed Frame>
+       Value: false
+-    - Class: rviz/Axes
++    - Alpha: 1
++      Class: rviz/Axes
+       Enabled: false
+       Length: 0.699999988079071
+       Name: Axes
+       Radius: 0.05999999865889549
+       Reference Frame: <Fixed Frame>
++      Show Trail: false
+       Value: false
+     - Class: rviz/Group
+       Displays:
+@@ -110,7 +114,7 @@ Visualization Manager:
+           Color: 255; 255; 255
+           Color Transformer: Intensity
+           Decay Time: 1000
+-          Enabled: true
++          Enabled: false
+           Invert Rainbow: true
+           Max Color: 255; 255; 255
+           Min Color: 0; 0; 0
+@@ -125,7 +129,7 @@ Visualization Manager:
+           Unreliable: false
+           Use Fixed Frame: true
+           Use rainbow: true
+-          Value: true
++          Value: false
+         - Alpha: 1
+           Autocompute Intensity Bounds: true
+           Autocompute Value Bounds:
+@@ -179,6 +183,7 @@ Visualization Manager:
+           Keep: 1
+           Name: Odometry
+           Position Tolerance: 0.0010000000474974513
++          Queue Size: 10
+           Shape:
+             Alpha: 1
+             Axes Length: 1
+@@ -194,12 +199,14 @@ Visualization Manager:
+           Value: true
+       Enabled: true
+       Name: Odometry
+-    - Class: rviz/Axes
++    - Alpha: 1
++      Class: rviz/Axes
+       Enabled: true
+       Length: 0.699999988079071
+       Name: Axes
+       Radius: 0.10000000149011612
+       Reference Frame: <Fixed Frame>
++      Show Trail: false
+       Value: true
+     - Alpha: 0
+       Buffer Length: 2
+@@ -218,6 +225,7 @@ Visualization Manager:
+         Z: 0
+       Pose Color: 25; 255; 255
+       Pose Style: None
++      Queue Size: 10
+       Radius: 0.029999999329447746
+       Shaft Diameter: 0.4000000059604645
+       Shaft Length: 0.4000000059604645
+@@ -290,6 +298,67 @@ Visualization Manager:
+         {}
+       Queue Size: 100
+       Value: false
++    - Alpha: 0.699999988079071
++      Class: rviz/Map
++      Color Scheme: map
++      Draw Behind: false
++      Enabled: true
++      Name: Map
++      Topic: /map
++      Unreliable: false
++      Use Timestamp: false
++      Value: true
++    - Class: rviz/TF
++      Enabled: true
++      Filter (blacklist): ""
++      Filter (whitelist): ""
++      Frame Timeout: 15
++      Frames:
++        All Enabled: true
++        body:
++          Value: true
++        camera_init:
++          Value: true
++      Marker Alpha: 1
++      Marker Scale: 10
++      Name: TF
++      Show Arrows: true
++      Show Axes: true
++      Show Names: true
++      Tree:
++        camera_init:
++          body:
++            {}
++      Update Interval: 0
++      Value: true
++    - Alpha: 1
++      Autocompute Intensity Bounds: true
++      Autocompute Value Bounds:
++        Max Value: 10
++        Min Value: -10
++        Value: true
++      Axis: Z
++      Channel Name: intensity
++      Class: rviz/LaserScan
++      Color: 255; 255; 255
++      Color Transformer: FlatColor
++      Decay Time: 0
++      Enabled: true
++      Invert Rainbow: false
++      Max Color: 255; 255; 255
++      Min Color: 0; 0; 0
++      Name: LaserScan
++      Position Transformer: XYZ
++      Queue Size: 10
++      Selectable: true
++      Size (Pixels): 3
++      Size (m): 0.10000000149011612
++      Style: Flat Squares
++      Topic: /scan
++      Unreliable: false
++      Use Fixed Frame: true
++      Use rainbow: true
++      Value: true
+   Enabled: true
+   Global Options:
+     Background Color: 0; 0; 0
+@@ -318,33 +387,33 @@ Visualization Manager:
+   Views:
+     Current:
+       Class: rviz/Orbit
+-      Distance: 46.0853271484375
++      Distance: 47.874881744384766
+       Enable Stereo Rendering:
+         Stereo Eye Separation: 0.05999999865889549
+         Stereo Focal Distance: 1
+         Swap Stereo Eyes: false
+         Value: false
++      Field of View: 0.7853981852531433
+       Focal Point:
+-        X: -4.982542037963867
+-        Y: -15.83572006225586
+-        Z: -3.063523054122925
++        X: -3.4943602085113525
++        Y: -15.825800895690918
++        Z: -5.032473087310791
+       Focal Shape Fixed Size: true
+       Focal Shape Size: 0.05000000074505806
+       Invert Z Axis: false
+       Name: Current View
+       Near Clip Distance: 0.009999999776482582
+-      Pitch: 0.399796724319458
++      Pitch: 0.47979655861854553
+       Target Frame: global
+-      Value: Orbit (rviz)
+-      Yaw: 1.277182698249817
++      Yaw: 1.1421822309494019
+     Saved: ~
+ Window Geometry:
+   Displays:
+     collapsed: false
+-  Height: 1028
++  Height: 752
+   Hide Left Dock: false
+   Hide Right Dock: true
+-  QMainWindow State: 000000ff00000000fd0000000400000000000001c800000368fc020000000dfb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c006100790073010000002700000368000000c900fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261fb0000000a0049006d0061006700650000000297000001dc0000000000000000fb0000000a0049006d0061006700650000000394000001600000000000000000fb0000000a0049006d00610067006501000002c5000000c70000000000000000fb0000000a0049006d00610067006501000002c5000000c70000000000000000fb0000000a0049006d00610067006501000002c5000000c700000000000000000000000100000152000004b7fc0200000003fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a00560069006500770073000000003d000004b7000000a400fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000490000000a9fc0100000001fb0000000a00560069006500770073030000004e00000080000002e100000197000000030000061f00000052fc0100000002fb0000000800540069006d006501000000000000061f000002eb00fffffffb0000000800540069006d00650100000000000004500000000000000000000004510000036800000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
++  QMainWindow State: 000000ff00000000fd0000000400000000000001c80000023efc020000000dfb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c006100790073010000003d0000023e000000c900fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261fb0000000a0049006d0061006700650000000297000001dc0000000000000000fb0000000a0049006d0061006700650000000394000001600000000000000000fb0000000a0049006d00610067006501000002c5000000c70000000000000000fb0000000a0049006d00610067006501000002c5000000c70000000000000000fb0000000a0049006d00610067006501000002c5000000c700000000000000000000000100000152000004b7fc0200000003fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a00560069006500770073000000003d000004b7000000a400fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000490000000a9fc0100000001fb0000000a00560069006500770073030000004e00000080000002e100000197000000030000056a00000052fc0100000002fb0000000800540069006d006501000000000000056a000003bc00fffffffb0000000800540069006d006501000000000000045000000000000000000000039c0000023e00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+   Selection:
+     collapsed: false
+   Time:
+@@ -353,6 +422,6 @@ Window Geometry:
+     collapsed: false
+   Views:
+     collapsed: true
+-  Width: 1567
+-  X: 67
+-  Y: 24
++  Width: 1386
++  X: 303
++  Y: 114
+diff --git a/src/IMU_Processing.hpp b/src/IMU_Processing.hpp
+index 362506f..0048e76 100644
+--- a/src/IMU_Processing.hpp
++++ b/src/IMU_Processing.hpp
+@@ -22,6 +22,7 @@
+ #include <sensor_msgs/Imu.h>
+ #include <sensor_msgs/PointCloud2.h>
+ #include <geometry_msgs/Vector3.h>
++#include "use-ikfom.hpp"
+ 
+ /// *************Preconfiguration
+ 
+@@ -49,7 +50,7 @@ class ImuProcess
+   void set_acc_bias_cov(const V3D &b_a);
+   Eigen::Matrix<double, 12, 12> Q;
+   void Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI::Ptr pcl_un_);
+-  void PredictImuState(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, int num_ped_imu_meas);
++
+   ofstream fout_imu;
+   V3D cov_acc;
+   V3D cov_gyr;
+@@ -62,27 +63,20 @@ class ImuProcess
+  private:
+   void IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, int &N);
+   void UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI &pcl_in_out);
+-  
++
+   PointCloudXYZI::Ptr cur_pcl_un_;
+   sensor_msgs::ImuConstPtr last_imu_;
+   deque<sensor_msgs::ImuConstPtr> v_imu_;
+   vector<Pose6D> IMUpose;
+-  vector<Pose6D> IMUposeWitOffsetT;
+   vector<M3D>    v_rot_pcl_;
+   M3D Lidar_R_wrt_IMU;
+   V3D Lidar_T_wrt_IMU;
++  V3D mean_acc;
+   V3D mean_gyr;
+   V3D angvel_last;
+   V3D acc_s_last;
+   double start_timestamp_;
+-  double last_lidar_end_time;
+-  V3D mean_acc;
+-  deque<Pose6DTemp> IMUposeTemp;
+-  Pose6DTemp IMUposeTempLast;
+-
+-  input_ikfom in_;
+-  state_ikfom imu_state_;
+-  
++  double last_lidar_end_time_;
+   int    init_iter_num = 1;
+   bool   b_first_frame_ = true;
+   bool   imu_need_init_ = true;
+@@ -117,7 +111,7 @@ void ImuProcess::Reset()
+   start_timestamp_  = -1;
+   init_iter_num     = 1;
+   v_imu_.clear();
+-  // IMUpose.clear();
++  IMUpose.clear();
+   last_imu_.reset(new sensor_msgs::Imu());
+   cur_pcl_un_.reset(new PointCloudXYZI());
+ }
+@@ -196,9 +190,28 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom,
+ 
+     N ++;
+   }
++  //改进重力对齐
++  //state_ikfom init_state = kf_state.get_x();
++  //init_state.grav = S2(- mean_acc / mean_acc.norm() * G_m_s2);
++  //重力->世界z
++  Eigen::Quaterniond rotation = Eigen::Quaterniond::FromTwoVectors (mean_acc,Eigen::Vector3d::UnitZ());
++  //2.LiDARx轴->世界x轴(右手系)
++  Eigen::Vector3d horizontal_ref = rotation * Eigen::Vector3d::UnitX(); // LiDAR x 在EK平面投影
++  horizontal_ref.z() = 0;
++  if(horizontal_ref.norm() < 1e-6) horizontal_ref = Eigen::Vector3d::UnitX();
++  horizontal_ref.normalize();
++  Eigen::Quaterniond rot_xy = Eigen::Quaterniond::FromTwoVectors(horizontal_ref, Eigen::Vector3d::UnitX());
++  Eigen::Quaterniond final_rot = rot_xy * rotation;
++  //3.应用
++  mean_acc = final_rot * mean_acc;
++  mean_gyr = final_rot * mean_gyr;
++  
+   state_ikfom init_state = kf_state.get_x();
+-  init_state.grav = S2(- mean_acc / mean_acc.norm() * G_m_s2);
++  init_state.rot = final_rot;
++  init_state.grav = S2(-mean_acc / mean_acc.norm() * G_m_s2);
++  
+   
++  //
+   //state_inout.rot = Eye3d; // Exp(mean_acc.cross(V3D(0, 0, -1 / scale_gravity)));
+   init_state.bg  = mean_gyr;
+   init_state.offset_T_L_I = Lidar_T_wrt_IMU;
+@@ -214,130 +227,7 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom,
+   init_P(21,21) = init_P(22,22) = 0.00001; 
+   kf_state.change_P(init_P);
+   last_imu_ = meas.imu.back();
+-}
+-
+-void ImuProcess::PredictImuState(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, int num_ped_imu_meas)
+-{
+-  if(!imu_need_init_)
+-  {
+-    auto v_imu = meas.imu;
+-    v_imu.push_front(last_imu_);
+-    imu_state_ = kf_state.get_x();
+-    if(num_ped_imu_meas == 0)
+-    {
+-      IMUpose.clear();
+-      IMUposeTemp.clear();
+-      IMUpose.push_back(set_pose6d(0.0, acc_s_last, angvel_last, imu_state_.vel, imu_state_.pos, imu_state_.rot.toRotationMatrix()));
+-    }
+-    V3D angvel_avr, acc_avr, acc_imu, vel_imu, pos_imu;
+-    M3D R_imu;
+-
+-    double dt = 0;
+-    if(num_ped_imu_meas==0)
+-    {
+-      for (auto it_imu = (v_imu.begin()); it_imu < (v_imu.end() - 1); it_imu++)
+-      {
+-        auto &&head = *(it_imu);
+-        auto &&tail = *(it_imu + 1);
+-        
+-        if (tail->header.stamp.toSec() < last_lidar_end_time)
+-        {
+-          continue;
+-        }
+-          
+-        angvel_avr<<0.5 * (head->angular_velocity.x + tail->angular_velocity.x),
+-                    0.5 * (head->angular_velocity.y + tail->angular_velocity.y),
+-                    0.5 * (head->angular_velocity.z + tail->angular_velocity.z);
+-        acc_avr   <<0.5 * (head->linear_acceleration.x + tail->linear_acceleration.x),
+-                    0.5 * (head->linear_acceleration.y + tail->linear_acceleration.y),
+-                    0.5 * (head->linear_acceleration.z + tail->linear_acceleration.z);
+-        acc_avr     = acc_avr * G_m_s2 / mean_acc.norm(); // - state_inout.ba;
+-        if(head->header.stamp.toSec() < last_lidar_end_time)
+-        {
+-          dt = tail->header.stamp.toSec() - last_lidar_end_time;
+-        }
+-        else
+-        {
+-          dt = tail->header.stamp.toSec() - head->header.stamp.toSec();
+-        }
+-        in_.acc = acc_avr;
+-        in_.gyro = angvel_avr;
+-        Q.block<3, 3>(0, 0).diagonal() = cov_gyr;
+-        Q.block<3, 3>(3, 3).diagonal() = cov_acc;
+-        Q.block<3, 3>(6, 6).diagonal() = cov_bias_gyr;
+-        Q.block<3, 3>(9, 9).diagonal() = cov_bias_acc;
+-        kf_state.predict(dt, Q, in_); // 预测。
+-
+-        /* save the poses at each IMU measurements */
+-        imu_state_ = kf_state.get_x();
+-        angvel_last = angvel_avr - imu_state_.bg;
+-        acc_s_last  = imu_state_.rot * (acc_avr - imu_state_.ba);
+-        for(int i=0; i<3; i++)
+-        {
+-          acc_s_last[i] += imu_state_.grav[i];
+-        }
+-        IMUposeTempLast.acc_s_last_temp = acc_s_last;
+-        IMUposeTempLast.angvel_last_temp = angvel_last;
+-        IMUposeTempLast.imu_vel_temp = imu_state_.vel;
+-        IMUposeTempLast.imu_pos_temp = imu_state_.pos;
+-        IMUposeTempLast.imu_rot_temp = imu_state_.rot.toRotationMatrix();
+-        IMUposeTempLast.imu_time_temp = tail->header.stamp.toSec();
+-        IMUposeTemp.push_back(IMUposeTempLast);
+-      }
+-    }
+-    else
+-    {
+-      for (auto it_imu = (v_imu.begin()+num_ped_imu_meas); it_imu < (v_imu.end() - 1); it_imu++)
+-      {
+-        auto &&head = *(it_imu);
+-        auto &&tail = *(it_imu + 1);
+-        
+-        if (tail->header.stamp.toSec() < last_lidar_end_time)
+-        {
+-          continue;
+-        } 
+-          
+-        angvel_avr<<0.5 * (head->angular_velocity.x + tail->angular_velocity.x),
+-                    0.5 * (head->angular_velocity.y + tail->angular_velocity.y),
+-                    0.5 * (head->angular_velocity.z + tail->angular_velocity.z);
+-        acc_avr   <<0.5 * (head->linear_acceleration.x + tail->linear_acceleration.x),
+-                    0.5 * (head->linear_acceleration.y + tail->linear_acceleration.y),
+-                    0.5 * (head->linear_acceleration.z + tail->linear_acceleration.z);
+-        acc_avr     = acc_avr * G_m_s2 / mean_acc.norm(); // - state_inout.ba;
+-        if(head->header.stamp.toSec() < last_lidar_end_time)
+-        {
+-          dt = tail->header.stamp.toSec() - last_lidar_end_time;
+-        }
+-        else
+-        {
+-          dt = tail->header.stamp.toSec() - head->header.stamp.toSec();
+-        }
+-        in_.acc = acc_avr;
+-        in_.gyro = angvel_avr;
+-        Q.block<3, 3>(0, 0).diagonal() = cov_gyr;
+-        Q.block<3, 3>(3, 3).diagonal() = cov_acc;
+-        Q.block<3, 3>(6, 6).diagonal() = cov_bias_gyr;
+-        Q.block<3, 3>(9, 9).diagonal() = cov_bias_acc;
+-        kf_state.predict(dt, Q, in_); // 预测。
+-        /* save the poses at each IMU measurements */
+-        imu_state_ = kf_state.get_x();
+-        angvel_last = angvel_avr - imu_state_.bg;
+-        acc_s_last  = imu_state_.rot * (acc_avr - imu_state_.ba);
+-        for(int i=0; i<3; i++)
+-        {
+-          acc_s_last[i] += imu_state_.grav[i];
+-        }
+-        IMUposeTempLast.acc_s_last_temp = acc_s_last;
+-        IMUposeTempLast.angvel_last_temp = angvel_last;
+-        IMUposeTempLast.imu_vel_temp = imu_state_.vel;
+-        IMUposeTempLast.imu_pos_temp = imu_state_.pos;
+-        IMUposeTempLast.imu_rot_temp = imu_state_.rot.toRotationMatrix();
+-        IMUposeTempLast.imu_time_temp = tail->header.stamp.toSec();
+-        IMUposeTemp.push_back(IMUposeTempLast);
+-      }
+-    }
+ 
+-  }
+ }
+ 
+ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI &pcl_out)
+@@ -353,27 +243,77 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
+   /*** sort point clouds by offset time ***/
+   pcl_out = *(meas.lidar);
+   sort(pcl_out.points.begin(), pcl_out.points.end(), time_list);
+-  // /*** forward propagation at each imu point ***/
+-  V3D angvel_avr, acc_imu, vel_imu, pos_imu;
++  // cout<<"[ IMU Process ]: Process lidar from "<<pcl_beg_time<<" to "<<pcl_end_time<<", " \
++  //          <<meas.imu.size()<<" imu msgs from "<<imu_beg_time<<" to "<<imu_end_time<<endl;
++
++  /*** Initialize IMU pose ***/
++  state_ikfom imu_state = kf_state.get_x();
++  IMUpose.clear();
++  IMUpose.push_back(set_pose6d(0.0, acc_s_last, angvel_last, imu_state.vel, imu_state.pos, imu_state.rot.toRotationMatrix()));
++
++  /*** forward propagation at each imu point ***/
++  V3D angvel_avr, acc_avr, acc_imu, vel_imu, pos_imu;
+   M3D R_imu;
+ 
+   double dt = 0;
+-  for (auto it_imu = IMUposeTemp.begin(); it_imu < (IMUposeTemp.end()); it_imu++)
++
++  input_ikfom in;
++  for (auto it_imu = v_imu.begin(); it_imu < (v_imu.end() - 1); it_imu++)
+   {
+     auto &&head = *(it_imu);
+-    double &&offs_t = head.imu_time_temp - pcl_beg_time;
+-    IMUpose.push_back(set_pose6d(offs_t, head.acc_s_last_temp, head.angvel_last_temp, head.imu_vel_temp, head.imu_pos_temp, head.imu_rot_temp));
++    auto &&tail = *(it_imu + 1);
++    
++    if (tail->header.stamp.toSec() < last_lidar_end_time_)    continue;
++    
++    angvel_avr<<0.5 * (head->angular_velocity.x + tail->angular_velocity.x),
++                0.5 * (head->angular_velocity.y + tail->angular_velocity.y),
++                0.5 * (head->angular_velocity.z + tail->angular_velocity.z);
++    acc_avr   <<0.5 * (head->linear_acceleration.x + tail->linear_acceleration.x),
++                0.5 * (head->linear_acceleration.y + tail->linear_acceleration.y),
++                0.5 * (head->linear_acceleration.z + tail->linear_acceleration.z);
++
++    // fout_imu << setw(10) << head->header.stamp.toSec() - first_lidar_time << " " << angvel_avr.transpose() << " " << acc_avr.transpose() << endl;
++
++    acc_avr     = acc_avr * G_m_s2 / mean_acc.norm(); // - state_inout.ba;
+ 
++    if(head->header.stamp.toSec() < last_lidar_end_time_)
++    {
++      dt = tail->header.stamp.toSec() - last_lidar_end_time_;
++      // dt = tail->header.stamp.toSec() - pcl_beg_time;
++    }
++    else
++    {
++      dt = tail->header.stamp.toSec() - head->header.stamp.toSec();
++    }
++    
++    in.acc = acc_avr;
++    in.gyro = angvel_avr;
++    Q.block<3, 3>(0, 0).diagonal() = cov_gyr;
++    Q.block<3, 3>(3, 3).diagonal() = cov_acc;
++    Q.block<3, 3>(6, 6).diagonal() = cov_bias_gyr;
++    Q.block<3, 3>(9, 9).diagonal() = cov_bias_acc;
++    kf_state.predict(dt, Q, in);
++
++    /* save the poses at each IMU measurements */
++    imu_state = kf_state.get_x();
++    angvel_last = angvel_avr - imu_state.bg;
++    acc_s_last  = imu_state.rot * (acc_avr - imu_state.ba);
++    for(int i=0; i<3; i++)
++    {
++      acc_s_last[i] += imu_state.grav[i];
++    }
++    double &&offs_t = tail->header.stamp.toSec() - pcl_beg_time;
++    IMUpose.push_back(set_pose6d(offs_t, acc_s_last, angvel_last, imu_state.vel, imu_state.pos, imu_state.rot.toRotationMatrix()));
+   }
+ 
+   /*** calculated the pos and attitude prediction at the frame-end ***/
+   double note = pcl_end_time > imu_end_time ? 1.0 : -1.0;
+   dt = note * (pcl_end_time - imu_end_time);
+-  kf_state.predict(dt, Q, in_);
++  kf_state.predict(dt, Q, in);
+   
+-  imu_state_ = kf_state.get_x();
++  imu_state = kf_state.get_x();
+   last_imu_ = meas.imu.back();
+-  last_lidar_end_time = pcl_end_time;
++  last_lidar_end_time_ = pcl_end_time;
+ 
+   /*** undistort each lidar point (backward propagation) ***/
+   if (pcl_out.points.begin() == pcl_out.points.end()) return;
+@@ -392,15 +332,16 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
+     for(; it_pcl->curvature / double(1000) > head->offset_time; it_pcl --)
+     {
+       dt = it_pcl->curvature / double(1000) - head->offset_time;
++
+       /* Transform to the 'end' frame, using only the rotation
+        * Note: Compensation direction is INVERSE of Frame's moving direction
+        * So if we want to compensate a point at timestamp-i to the frame-e
+-       * P_compensate = R_imu_e ^ T * (R_i * P_i + T_ei) where T_ei is represented in_ global frame */
++       * P_compensate = R_imu_e ^ T * (R_i * P_i + T_ei) where T_ei is represented in global frame */
+       M3D R_i(R_imu * Exp(angvel_avr, dt));
+       
+       V3D P_i(it_pcl->x, it_pcl->y, it_pcl->z);
+-      V3D T_ei(pos_imu + vel_imu * dt + 0.5 * acc_imu * dt * dt - imu_state_.pos);
+-      V3D P_compensate = imu_state_.offset_R_L_I.conjugate() * (imu_state_.rot.conjugate() * (R_i * (imu_state_.offset_R_L_I * P_i + imu_state_.offset_T_L_I) + T_ei) - imu_state_.offset_T_L_I);// not accurate!
++      V3D T_ei(pos_imu + vel_imu * dt + 0.5 * acc_imu * dt * dt - imu_state.pos);
++      V3D P_compensate = imu_state.offset_R_L_I.conjugate() * (imu_state.rot.conjugate() * (R_i * (imu_state.offset_R_L_I * P_i + imu_state.offset_T_L_I) + T_ei) - imu_state.offset_T_L_I);// not accurate!
+       
+       // save Undistorted points and their rotation
+       it_pcl->x = P_compensate(0);
+@@ -410,7 +351,6 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
+       if (it_pcl == pcl_out.points.begin()) break;
+     }
+   }
+-
+ }
+ 
+ void ImuProcess::Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI::Ptr cur_pcl_un_)
+@@ -430,7 +370,7 @@ void ImuProcess::Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom,
+     
+     last_imu_   = meas.imu.back();
+ 
+-    imu_state_ = kf_state.get_x();
++    state_ikfom imu_state = kf_state.get_x();
+     if (init_iter_num > MAX_INI_COUNT)
+     {
+       cov_acc *= pow(G_m_s2 / mean_acc.norm(), 2);
+@@ -443,7 +383,7 @@ void ImuProcess::Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom,
+       //          imu_state.grav[0], imu_state.grav[1], imu_state.grav[2], mean_acc.norm(), cov_bias_gyr[0], cov_bias_gyr[1], cov_bias_gyr[2], cov_acc[0], cov_acc[1], cov_acc[2], cov_gyr[0], cov_gyr[1], cov_gyr[2]);
+       fout_imu.open(DEBUG_FILE_DIR("imu.txt"),ios::out);
+     }
+-    
++
+     return;
+   }
+ 
+diff --git a/src/imu_predict.hpp b/src/imu_predict.hpp
+deleted file mode 100644
+index e69de29..0000000
+diff --git a/src/laserMapping.cpp b/src/laserMapping.cpp
+index 671c13a..cd1a9c1 100644
+--- a/src/laserMapping.cpp
++++ b/src/laserMapping.cpp
+@@ -56,9 +56,8 @@
+ #include <tf/transform_datatypes.h>
+ #include <tf/transform_broadcaster.h>
+ #include <geometry_msgs/Vector3.h>
+-#include <livox_ros_driver/CustomMsg.h>
++#include <livox_ros_driver2/CustomMsg.h>
+ #include "preprocess.h"
+-
+ #include <ikd-Tree/ikd_Tree.h>
+ 
+ #define INIT_TIME           (0.1)
+@@ -71,7 +70,7 @@ double kdtree_incremental_time = 0.0, kdtree_search_time = 0.0, kdtree_delete_ti
+ double T1[MAXN], s_plot[MAXN], s_plot2[MAXN], s_plot3[MAXN], s_plot4[MAXN], s_plot5[MAXN], s_plot6[MAXN], s_plot7[MAXN], s_plot8[MAXN], s_plot9[MAXN], s_plot10[MAXN], s_plot11[MAXN];
+ double match_time = 0, solve_time = 0, solve_const_H_time = 0;
+ int    kdtree_size_st = 0, kdtree_size_end = 0, add_point_size = 0, kdtree_delete_counter = 0;
+-bool   runtime_pos_log = true, pcd_save_en = false, time_sync_en = false, extrinsic_est_en = true, path_en = true;
++bool   runtime_pos_log = false, pcd_save_en = false, time_sync_en = false, extrinsic_est_en = true, path_en = true;
+ /**************************/
+ 
+ float res_last[100000] = {0.0};
+@@ -93,7 +92,7 @@ double cube_len = 0, HALF_FOV_COS = 0, FOV_DEG = 0, total_distance = 0, lidar_en
+ int    effct_feat_num = 0, time_log_counter = 0, scan_count = 0, publish_count = 0;
+ int    iterCount = 0, feats_down_size = 0, NUM_MAX_ITERATIONS = 0, laserCloudValidNum = 0, pcd_save_interval = -1, pcd_index = 0;
+ bool   point_selected_surf[100000] = {0};
+-bool   lidar_pushed, flg_first_scan = true, flg_exit = false, flg_EKF_inited, can_clean_imu = false, new_imu_meas = false;
++bool   lidar_pushed, flg_first_scan = true, flg_exit = false, flg_EKF_inited;
+ bool   scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
+ 
+ vector<vector<int>>  pointSearchInd_surf; 
+@@ -104,9 +103,6 @@ vector<double>       extrinR(9, 0.0);
+ deque<double>                     time_buffer;
+ deque<PointCloudXYZI::Ptr>        lidar_buffer;
+ deque<sensor_msgs::Imu::ConstPtr> imu_buffer;
+-deque<sensor_msgs::JointState::ConstPtr> encoder_buffer;
+-deque<geometry_msgs::WrenchStamped::ConstPtr> l_foot_force_buffer;
+-deque<geometry_msgs::WrenchStamped::ConstPtr> r_foot_force_buffer;
+ 
+ PointCloudXYZI::Ptr featsFromMap(new PointCloudXYZI());
+ PointCloudXYZI::Ptr feats_undistort(new PointCloudXYZI());
+@@ -143,22 +139,58 @@ geometry_msgs::PoseStamped msg_body_pose;
+ shared_ptr<Preprocess> p_pre(new Preprocess());
+ shared_ptr<ImuProcess> p_imu(new ImuProcess());
+ 
+-int num_predicted_imu_meas = 0;
++ros::Publisher odomHigh_speed;
++double latest_time;
++V3D latest_P, latest_V, latest_Ba, latest_Bg, latest_acc_0, latest_gyr_0,acc_0,gyr_0;
++M3D latest_Q;
++bool init = false;
++
++void updateLatestStates(){
++    latest_time = lidar_end_time;
++    latest_P = state_point.pos;
++    latest_Q = state_point.rot;
++    latest_V = state_point.vel;
++    latest_Ba = state_point.ba;
++    latest_Bg = state_point.bg;
++    // latest_acc_0 = acc_0;
++    // latest_gyr_0 = gyr_0;
+ 
+-using namespace std; //DEBUG
++}
+ 
+-enum ContactPoint
++void fastPredictIMU(double t, V3D acc, V3D gyr)
+ {
+-    NONE = 0,
+-    LeftFoot,
+-    RightFoot,
+-    BothFeet
+-};
+-
+-ContactPoint contact = NONE;
+-static ContactPoint next_contact;
+-static ContactPoint prev_contact;
+-static int contact_change_num = 0;
++    double dt = t - latest_time;
++    latest_time = t;
++    V3D un_acc_0 = latest_Q * (latest_acc_0 - latest_Ba) + V3D(state_point.grav[0],state_point.grav[1],state_point.grav[2]);
++    V3D un_gyr = 0.5 * (latest_gyr_0 + gyr) - latest_Bg;
++    latest_Q = latest_Q * Exp(un_gyr, dt);
++    V3D un_acc_1 = latest_Q * (acc - latest_Ba) + V3D(state_point.grav[0],state_point.grav[1],state_point.grav[2]);
++    V3D un_acc = 0.5 * (un_acc_0 + un_acc_1);
++    latest_P = latest_P + dt * latest_V + 0.5 * dt * dt * un_acc;
++    latest_V = latest_V + dt * un_acc;
++    latest_acc_0 = acc;
++    latest_gyr_0 = gyr;
++    nav_msgs::Odometry odomHigh;
++    Eigen::Quaterniond quadrotor_Q = Eigen::Quaterniond(latest_Q);
++    odomHigh.header.stamp =ros::Time().fromSec(t);
++    odomHigh.header.frame_id = "world";
++    odomHigh.child_frame_id = "odom_imu";
++    odomHigh.pose.pose.position.x = latest_P.x();
++    odomHigh.pose.pose.position.y = latest_P.y();
++    odomHigh.pose.pose.position.z = latest_P.z();
++    odomHigh.pose.pose.orientation.x = quadrotor_Q.x();
++    odomHigh.pose.pose.orientation.y = quadrotor_Q.y();
++    odomHigh.pose.pose.orientation.z = quadrotor_Q.z();
++    odomHigh.pose.pose.orientation.w = quadrotor_Q.w();
++    odomHigh.twist.twist.linear.x = latest_V.x();
++    odomHigh.twist.twist.linear.y = latest_V.y();
++    odomHigh.twist.twist.linear.z = latest_V.z();
++    odomHigh.twist.twist.angular.x = gyr.x() - state_point.bg.x();
++    odomHigh.twist.twist.angular.y = gyr.y() - state_point.bg.y();
++    odomHigh.twist.twist.angular.z = gyr.z() - state_point.bg.z();
++
++    odomHigh_speed.publish(odomHigh);    
++}
+ 
+ void SigHandle(int sig)
+ {
+@@ -253,7 +285,7 @@ void lasermap_fov_segment()
+     cub_needrm.clear();
+     kdtree_delete_counter = 0;
+     kdtree_delete_time = 0.0;    
+-    // pointBodyToWorld(XAxisPoint_body, XAxisPoint_world);
++    pointBodyToWorld(XAxisPoint_body, XAxisPoint_world);
+     V3D pos_LiD = pos_lid;
+     if (!Localmap_Initialized){
+         for (int i = 0; i < 3; i++){
+@@ -266,7 +298,7 @@ void lasermap_fov_segment()
+     float dist_to_map_edge[3][2];
+     bool need_move = false;
+     for (int i = 0; i < 3; i++){
+-        dist_to_map_edge[i][0] = fabs(pos_LiD(i) - LocalMap_Points.vertex_min[i]); // fabs() 绝对值
++        dist_to_map_edge[i][0] = fabs(pos_LiD(i) - LocalMap_Points.vertex_min[i]);
+         dist_to_map_edge[i][1] = fabs(pos_LiD(i) - LocalMap_Points.vertex_max[i]);
+         if (dist_to_map_edge[i][0] <= MOV_THRESHOLD * DET_RANGE || dist_to_map_edge[i][1] <= MOV_THRESHOLD * DET_RANGE) need_move = true;
+     }
+@@ -315,12 +347,11 @@ void standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstPtr &msg)
+     s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
+     mtx_buffer.unlock();
+     sig_buffer.notify_all();
+-
+ }
+ 
+ double timediff_lidar_wrt_imu = 0.0;
+ bool   timediff_set_flg = false;
+-void livox_pcl_cbk(const livox_ros_driver::CustomMsg::ConstPtr &msg) 
++void livox_pcl_cbk(const livox_ros_driver2::CustomMsg::ConstPtr &msg) 
+ {
+     mtx_buffer.lock();
+     double preprocess_start_time = omp_get_wtime();
+@@ -360,6 +391,17 @@ void imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in)
+     // cout<<"IMU got at: "<<msg_in->header.stamp.toSec()<<endl;
+     sensor_msgs::Imu::Ptr msg(new sensor_msgs::Imu(*msg_in));
+ 
++    msg->linear_acceleration.x *= G_m_s2;
++    msg->linear_acceleration.y *= G_m_s2;
++    msg->linear_acceleration.z *= G_m_s2;
++
++    if(init)
++    {
++        fastPredictIMU(msg->header.stamp.toSec(),
++                V3D(msg->linear_acceleration.x,msg->linear_acceleration.y,msg->linear_acceleration.z),
++                V3D(msg->angular_velocity.x,msg->angular_velocity.y,msg->angular_velocity.z));
++    }
++
+     msg->header.stamp = ros::Time().fromSec(msg_in->header.stamp.toSec() - time_diff_lidar_to_imu);
+     if (abs(timediff_lidar_wrt_imu) > 0.1 && time_sync_en)
+     {
+@@ -384,63 +426,11 @@ void imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in)
+     sig_buffer.notify_all();
+ }
+ 
+-void encoder_cbk(const sensor_msgs::JointState::ConstPtr &msg)
+-{
+-    mtx_buffer.lock();
+-    encoder_buffer.push_back(msg);
+-    mtx_buffer.unlock();
+-    sig_buffer.notify_all();
+-}
+-
+-void l_foot_force_cbk(const geometry_msgs::WrenchStamped::ConstPtr &msg)
+-{
+-    mtx_buffer.lock();
+-    l_foot_force_buffer.push_back(msg);
+-    mtx_buffer.unlock();
+-    sig_buffer.notify_all();
+-}
+-
+-void r_foot_force_cbk(const geometry_msgs::WrenchStamped::ConstPtr &msg)
+-{
+-    mtx_buffer.lock();
+-    r_foot_force_buffer.push_back(msg);
+-    mtx_buffer.unlock();
+-    sig_buffer.notify_all();
+-}
+-
+ double lidar_mean_scantime = 0.0;
+ int    scan_num = 0;
+ bool sync_packages(MeasureGroup &meas)
+ {
+-    /*** push imu data, and pop from imu buffer ***/
+-    // ROS_INFO("imu_buffer.size(): %d", int(imu_buffer.size()));
+-    // ROS_INFO("meas.imu.size(): %d", int(meas.imu.size()));
+-    if (can_clean_imu)
+-    {
+-        meas.imu.clear();
+-        can_clean_imu = false;
+-    }
+-
+-    if (!imu_buffer.empty())
+-    {
+-        double imu_time = imu_buffer.front()->header.stamp.toSec();
+-        
+-        while ((!imu_buffer.empty()))
+-        {
+-            imu_time = imu_buffer.front()->header.stamp.toSec();
+-            // if(imu_time > lidar_end_time) break;
+-            meas.imu.push_back(imu_buffer.front());
+-            new_imu_meas = true;
+-            imu_buffer.pop_front();
+-            // std::cout << "in sync loop, meas.imu.size() = " << meas.imu.size() << std::endl;
+-        }
+-    }
+-    else
+-    {
+-        new_imu_meas = false;
+-    }
+-
+-    if (lidar_buffer.empty()) {
++    if (lidar_buffer.empty() || imu_buffer.empty()) {
+         return false;
+     }
+ 
+@@ -474,29 +464,24 @@ bool sync_packages(MeasureGroup &meas)
+     {
+         return false;
+     }
+-    
++
++    /*** push imu data, and pop from imu buffer ***/
++    double imu_time = imu_buffer.front()->header.stamp.toSec();
++    meas.imu.clear();
++    while ((!imu_buffer.empty()) && (imu_time < lidar_end_time))
++    {
++        imu_time = imu_buffer.front()->header.stamp.toSec();
++        if(imu_time > lidar_end_time) break;
++        meas.imu.push_back(imu_buffer.front());
++        imu_buffer.pop_front();
++    }
++
+     lidar_buffer.pop_front();
+     time_buffer.pop_front();
+     lidar_pushed = false;
+-    can_clean_imu = true;
+     return true;
+ }
+ 
+-bool new_force_and_encoder(MeasureGroup &meas)
+-{
+-    bool has_new_data = false;
+-    if (!l_foot_force_buffer.empty() || !r_foot_force_buffer.empty()) {
+-        has_new_data = true;
+-        meas.l_f_force.insert(meas.l_f_force.end(), l_foot_force_buffer.begin(), l_foot_force_buffer.end());
+-        meas.r_f_force.insert(meas.r_f_force.end(), r_foot_force_buffer.begin(), r_foot_force_buffer.end());
+-        meas.joint_encoder.insert(meas.joint_encoder.end(), encoder_buffer.begin(), encoder_buffer.end());
+-        l_foot_force_buffer.clear();
+-        r_foot_force_buffer.clear();
+-        encoder_buffer.clear();
+-    }
+-    return has_new_data;
+-}
+-
+ int process_increments = 0;
+ void map_incremental()
+ {
+@@ -664,7 +649,7 @@ void publish_odometry(const ros::Publisher & pubOdomAftMapped)
+ {
+     odomAftMapped.header.frame_id = "camera_init";
+     odomAftMapped.child_frame_id = "body";
+-    odomAftMapped.header.stamp = ros::Time().now();
++    odomAftMapped.header.stamp = ros::Time().fromSec(lidar_end_time);// ros::Time().fromSec(lidar_end_time);
+     set_posestamp(odomAftMapped.pose);
+     pubOdomAftMapped.publish(odomAftMapped);
+     auto P = kf.get_P();
+@@ -699,7 +684,7 @@ void publish_path(const ros::Publisher pubPath)
+     msg_body_pose.header.stamp = ros::Time().fromSec(lidar_end_time);
+     msg_body_pose.header.frame_id = "camera_init";
+ 
+-    /*** if path is too large, the rviz will crash ***/
++    /*** if path is too large, the rvis will crash ***/
+     static int jjj = 0;
+     jjj++;
+     if (jjj % 10 == 0) 
+@@ -738,7 +723,7 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
+ 
+         auto &points_near = Nearest_Points[i];
+ 
+-        if (ekfom_data.converge) // 相当于过滤一下？不收敛就说明位置估计不准，就不用匹配了
++        if (ekfom_data.converge)
+         {
+             /** Find the closest surfaces in the map **/
+             ikdtree.Nearest_Search(point_world, NUM_MATCH_POINTS, points_near, pointSearchSqDis);
+@@ -859,7 +844,7 @@ int main(int argc, char** argv)
+     nh.param<int>("preprocess/scan_rate", p_pre->SCAN_RATE, 10);
+     nh.param<int>("point_filter_num", p_pre->point_filter_num, 2);
+     nh.param<bool>("feature_extract_enable", p_pre->feature_enabled, false);
+-    nh.param<bool>("runtime_pos_log_enable", runtime_pos_log, 1);
++    nh.param<bool>("runtime_pos_log_enable", runtime_pos_log, 0);
+     nh.param<bool>("mapping/extrinsic_est_en", extrinsic_est_en, true);
+     nh.param<bool>("pcd_save/pcd_save_en", pcd_save_en, false);
+     nh.param<int>("pcd_save/interval", pcd_save_interval, -1);
+@@ -930,6 +915,8 @@ int main(int argc, char** argv)
+             ("/Odometry", 100000);
+     ros::Publisher pubPath          = nh.advertise<nav_msgs::Path> 
+             ("/path", 100000);
++    odomHigh_speed = nh.advertise<nav_msgs::Odometry>
++            ("/Odom_high_freq",10000);
+ //------------------------------------------------------------------------------------------------------
+     signal(SIGINT, SigHandle);
+     ros::Rate rate(5000);
+@@ -947,8 +934,7 @@ int main(int argc, char** argv)
+                 flg_first_scan = false;
+                 continue;
+             }
+-            p_imu->PredictImuState(Measures, kf, num_predicted_imu_meas);
+-            num_predicted_imu_meas = Measures.imu.size();
++
+             double t0,t1,t2,t3,t4,t5,match_start, solve_start, svd_time;
+ 
+             match_time = 0;
+@@ -958,10 +944,10 @@ int main(int argc, char** argv)
+             svd_time   = 0;
+             t0 = omp_get_wtime();
+ 
+-            p_imu->Process(Measures, kf, feats_undistort); // 这里边就做完预测了。
++            p_imu->Process(Measures, kf, feats_undistort);
+             state_point = kf.get_x();
+             pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
+-            // std::cout << "foo/n " << std::endl;
++
+             if (feats_undistort->empty() || (feats_undistort == NULL))
+             {
+                 ROS_WARN("No point, skip this scan!\n");
+@@ -978,7 +964,6 @@ int main(int argc, char** argv)
+             downSizeFilterSurf.filter(*feats_down_body);
+             t1 = omp_get_wtime();
+             feats_down_size = feats_down_body->points.size();
+-            
+             /*** initialize the map kdtree ***/
+             if(ikdtree.Root_Node == nullptr)
+             {
+@@ -999,7 +984,7 @@ int main(int argc, char** argv)
+             
+             // cout<<"[ mapping ]: In num: "<<feats_undistort->points.size()<<" downsamp "<<feats_down_size<<" Map num: "<<featsFromMapNum<<"effect num:"<<effct_feat_num<<endl;
+ 
+-            /*** ICP and iterated Kalman filter update ***/ //??
++            /*** ICP and iterated Kalman filter update ***/
+             if (feats_down_size < 5)
+             {
+                 ROS_WARN("No point, skip this scan!\n");
+@@ -1042,6 +1027,9 @@ int main(int argc, char** argv)
+ 
+             double t_update_end = omp_get_wtime();
+ 
++            init = true;
++            updateLatestStates();
++
+             /******* Publish odometry *******/
+             publish_odometry(pubOdomAftMapped);
+ 
+@@ -1086,18 +1074,6 @@ int main(int argc, char** argv)
+                 <<" "<<state_point.bg.transpose()<<" "<<state_point.ba.transpose()<<" "<<state_point.grav<<" "<<feats_undistort->points.size()<<endl;
+                 dump_lio_state_to_log(fp);
+             }
+-            Measures.imu.clear();
+-        }
+-        else if(new_imu_meas)
+-        {
+-            if(num_predicted_imu_meas > Measures.imu.size())
+-            {
+-                num_predicted_imu_meas = 0;
+-            }
+-            p_imu->PredictImuState(Measures, kf, num_predicted_imu_meas);
+-            num_predicted_imu_meas = Measures.imu.size();
+-            state_point = kf.get_x();
+-            publish_odometry(pubOdomAftMapped);
+         }
+ 
+         status = ros::ok();
+diff --git a/src/preprocess.cpp b/src/preprocess.cpp
+index 7e57f71..6b12efe 100644
+--- a/src/preprocess.cpp
++++ b/src/preprocess.cpp
+@@ -41,7 +41,7 @@ void Preprocess::set(bool feat_en, int lid_type, double bld, int pfilt_num)
+   point_filter_num = pfilt_num;
+ }
+ 
+-void Preprocess::process(const livox_ros_driver::CustomMsg::ConstPtr &msg, PointCloudXYZI::Ptr &pcl_out)
++void Preprocess::process(const livox_ros_driver2::CustomMsg::ConstPtr &msg, PointCloudXYZI::Ptr &pcl_out)
+ {  
+   avia_handler(msg);
+   *pcl_out = pl_surf;
+@@ -85,7 +85,7 @@ void Preprocess::process(const sensor_msgs::PointCloud2::ConstPtr &msg, PointClo
+   *pcl_out = pl_surf;
+ }
+ 
+-void Preprocess::avia_handler(const livox_ros_driver::CustomMsg::ConstPtr &msg)
++void Preprocess::avia_handler(const livox_ros_driver2::CustomMsg::ConstPtr &msg)
+ {
+   pl_surf.clear();
+   pl_corn.clear();
+@@ -277,7 +277,6 @@ void Preprocess::oust64_handler(const sensor_msgs::PointCloud2::ConstPtr &msg)
+   // pub_func(pl_surf, pub_corn, msg->header.stamp);
+ }
+ 
+-// 把velodyne的点云转换成pcl的点云，时间戳附在curvature上
+ void Preprocess::velodyne_handler(const sensor_msgs::PointCloud2::ConstPtr &msg)
+ {
+     pl_surf.clear();
+@@ -450,8 +449,6 @@ void Preprocess::velodyne_handler(const sensor_msgs::PointCloud2::ConstPtr &msg)
+         }
+       }
+     }
+-    // print the number of points in pl_surf
+-    // cout<<"pl_surf: "<<pl_surf.points.size()<<endl;
+ }
+ 
+ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, vector<orgtype> &types)
+diff --git a/src/preprocess.h b/src/preprocess.h
+index 9172abf..2012822 100644
+--- a/src/preprocess.h
++++ b/src/preprocess.h
+@@ -1,7 +1,7 @@
+ #include <ros/ros.h>
+ #include <pcl_conversions/pcl_conversions.h>
+ #include <sensor_msgs/PointCloud2.h>
+-#include <livox_ros_driver/CustomMsg.h>
++#include <livox_ros_driver2/CustomMsg.h>
+ 
+ using namespace std;
+ 
+@@ -16,7 +16,6 @@ enum Feature{Nor, Poss_Plane, Real_Plane, Edge_Jump, Edge_Plane, Wire, ZeroPoint
+ enum Surround{Prev, Next};
+ enum E_jump{Nr_nor, Nr_zero, Nr_180, Nr_inf, Nr_blind};
+ 
+-// 用于存储激光雷达点的一些其他属性
+ struct orgtype
+ {
+   double range;
+@@ -25,8 +24,6 @@ struct orgtype
+   double intersect;
+   E_jump edj[2];
+   Feature ftype;
+-  
+-  //构造函数
+   orgtype()
+   {
+     range = 0;
+@@ -52,7 +49,7 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(velodyne_ros::Point,
+     (float, z, z)
+     (float, intensity, intensity)
+     (float, time, time)
+-    (std::uint16_t, ring, ring)
++    (uint16_t, ring, ring)
+ )
+ 
+ namespace ouster_ros {
+@@ -90,7 +87,7 @@ class Preprocess
+   Preprocess();
+   ~Preprocess();
+   
+-  void process(const livox_ros_driver::CustomMsg::ConstPtr &msg, PointCloudXYZI::Ptr &pcl_out);
++  void process(const livox_ros_driver2::CustomMsg::ConstPtr &msg, PointCloudXYZI::Ptr &pcl_out);
+   void process(const sensor_msgs::PointCloud2::ConstPtr &msg, PointCloudXYZI::Ptr &pcl_out);
+   void set(bool feat_en, int lid_type, double bld, int pfilt_num);
+ 
+@@ -106,7 +103,7 @@ class Preprocess
+     
+ 
+   private:
+-  void avia_handler(const livox_ros_driver::CustomMsg::ConstPtr &msg);
++  void avia_handler(const livox_ros_driver2::CustomMsg::ConstPtr &msg);
+   void oust64_handler(const sensor_msgs::PointCloud2::ConstPtr &msg);
+   void velodyne_handler(const sensor_msgs::PointCloud2::ConstPtr &msg);
+   void give_feature(PointCloudXYZI &pl, vector<orgtype> &types);
