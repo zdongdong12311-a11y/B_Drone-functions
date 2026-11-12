@@ -1,5 +1,0 @@
-<?xml version="1.0"?>
-<launch>
-    <!-- 启动视觉检测节点，type 已更改为 detect -->
-    <node pkg="rgb_qr_detect" type="detect" name="vision_detector" output="screen" />
-</launch>
