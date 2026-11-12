@@ -1,0 +1,49 @@
+<launch>
+  <!--
+    Real-machine TF launch.
+
+    This launch only builds the robot's static TF from the URDF:
+      body -> lidar_link
+      body -> base_link -> base_plate/legs/flight_controller/...
+
+    It does NOT publish the dynamic world transform. That must come from
+    exactly one localization source:
+      * FAST-LIO: camera_init -> body
+      * or PX4/MAVROS: odom -> base_link
+
+    Do not run both at the same time unless you explicitly connect them.
+  -->
+
+  <arg name="rviz" default="true"/>
+  <arg name="publish_livox_static_tf" default="true"/>
+  <arg name="livox_frame" default="livox_frame"/>
+
+  <param name="robot_description"
+         textfile="$(find drone_description)/urdf/drone.urdf"/>
+
+  <node pkg="robot_state_publisher"
+        type="robot_state_publisher"
+        name="robot_state_publisher"
+        output="screen">
+    <param name="publish_frequency" value="50.0"/>
+  </node>
+
+  <!--
+    Livox ROS Driver 2 publishes its point cloud in `livox_frame`.
+    The URDF calls the MID-360 LiDAR frame `lidar_link`.
+    This static transform makes the driver frame a child of lidar_link.
+
+    If your driver uses another frame name, change the `livox_frame` arg.
+  -->
+  <node if="$(arg publish_livox_static_tf)"
+        pkg="tf2_ros"
+        type="static_transform_publisher"
+        name="lidar_link_to_livox_frame"
+        args="0 0 0 0 0 0 1 lidar_link $(arg livox_frame)"/>
+
+  <node if="$(arg rviz)"
+        pkg="rviz"
+        type="rviz"
+        name="rviz"
+        args="-d $(find drone_description)/rviz/drone.rviz"/>
+</launch>
