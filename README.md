@@ -1,7 +1,8 @@
 # Highly Modular Autonomous Drone
 
 基于 **Livox Mid-360 激光雷达** 的模块化无人机自主避障、建图与导航系统。支持多航点自主飞行、视觉识别抓取投放、多层安全保护机制。
-
+![preview](real2.png)
+![preview](real3.png)
 ## 硬件配置
 
 | 组件 | 型号 | 备注 |
